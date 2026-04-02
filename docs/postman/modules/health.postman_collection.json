@@ -1,0 +1,87 @@
+{
+  "info": {
+    "_postman_id": "3d7379a8-a476-49d8-a6f7-ed35ca89989e",
+    "name": "HR.ai - Health Module",
+    "description": "Module-level Postman collection for health routes. Includes healthy and degraded response examples.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8000/api/v1"
+    }
+  ],
+  "item": [
+    {
+      "name": "Health Check",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/health",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "health"
+          ]
+        },
+        "description": "Check overall service health and dependency status."
+      },
+      "response": [
+        {
+          "name": "200 OK - Healthy",
+          "originalRequest": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/health",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "health"
+              ]
+            }
+          },
+          "status": "OK",
+          "code": 200,
+          "_postman_previewlanguage": "json",
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": "{\n  \"status\": \"ok\",\n  \"database\": \"ok\",\n  \"redis\": \"ok\"\n}"
+        },
+        {
+          "name": "200 OK - Degraded",
+          "originalRequest": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/health",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "health"
+              ]
+            }
+          },
+          "status": "OK",
+          "code": 200,
+          "_postman_previewlanguage": "json",
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": "{\n  \"status\": \"degraded\",\n  \"database\": \"ok\",\n  \"redis\": \"error: Redis client is not initialized. Call init_redis() first.\"\n}"
+        }
+      ]
+    }
+  ]
+}

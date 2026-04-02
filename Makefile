@@ -25,6 +25,12 @@ web-install:
 migrate:
 	python scripts/migrate.py
 
+seed:
+	python scripts/seed.py
+
+seed-reset:
+	python scripts/seed.py --reset
+
 # ─── Install all ──────────────────────────────────────────────────────────────
 install: api-install bot-install web-install
 

@@ -181,6 +181,10 @@ HR.ai is designed with explicit trust and privacy controls.
 - **API Key** for server-to-server integration
 - **Bearer Token (JWT)** for employee and HR user sessions
 
+For the current Phase 1 MVP, employee login is intentionally simple:
+- existing employee email -> JWT bearer session
+- `employee_id` and `company_id` are injected from the authenticated session, not user prompts
+
 ### OAuth scopes
 Examples include:
 - `conversation:read`
@@ -268,8 +272,12 @@ Current cache philosophy:
 Base URL:
 
 ```text
-https://api.hr-ai.io/v1
+https://api.hr-ai.io/api/v1
 ```
+
+### Auth
+- `POST /auth/login`
+- `GET /auth/me`
 
 ### Conversations
 - `POST /conversations`
@@ -298,6 +306,15 @@ https://api.hr-ai.io/v1
 - `GET /webhooks/{id}`
 - `PATCH /webhooks/{id}`
 - `DELETE /webhooks/{id}`
+
+Current docs for implemented endpoints:
+- Interactive docs: `/docs`
+- OpenAPI JSON: `/openapi.json`
+- Markdown reference: `docs/api/phase-1-auth-health.md`
+- Postman combined collection: `docs/postman/hr-ai-phase-1.postman_collection.json`
+- Postman module collection - auth: `docs/postman/modules/auth.postman_collection.json`
+- Postman module collection - health: `docs/postman/modules/health.postman_collection.json`
+- Postman environment: `docs/postman/hr-ai-local.postman_environment.json`
 
 ---
 
@@ -421,6 +438,45 @@ When contributing to HR.ai:
 - keep sensitive-case handling conservative
 - prefer explicit, human-readable code over clever abstractions
 - treat HR.ai as an operational system, not just a chat app
+
+---
+
+## TODO List (Implementation Tasks)
+
+### Phase 1: Setup & Trust Boundaries (Priority)
+- [ ] **Monorepo Init:** Scaffold `apps/api` (FastAPI), `apps/bot` (discord.py), and `packages/shared`.
+- [ ] **Database Setup:** Initialize Supabase PostgreSQL and configure `pgvector` extension.
+- [ ] **Auth & Security:** Implement JWT/Bearer token middleware in FastAPI.
+- [ ] **Trust Boundary Enforcement:** Ensure `employee_id` and `company_id` are strictly injected from the authenticated session context, not the LLM.
+- [ ] **Caching Layer:** Setup LRU in-memory cache (for static data like rules) and Upstash Redis (for dynamic data like sessions/payroll).
+
+### Phase 2: Action Engine
+- [ ] **Schemas:** Define Pydantic models for actions (`document_generation`, `counseling_task`, `followup_chat`, `escalation`, `custom_webhook`).
+- [ ] **Database Schema:** Create tables for actions, logs, and rules mapping.
+- [ ] **Delivery Logic:** Implement delivery routing (email, webhook, in_app, manual_review).
+- [ ] **Sensitive Guardrail:** Enforce `manual_review` default for any action classified as sensitive.
+
+### Phase 3: Agent Architecture (AI Layer)
+- [ ] **Orchestrator:** Implement intent classification and sensitivity detection (using MiniMax M2.7).
+- [ ] **hr-data-agent (TAG):** Build LangChain tools to retrieve structured data (payroll, attendance, time_offs) safely using the session's `employee_id`.
+- [ ] **company-agent (RAG):** Implement vector search using `multilingual-e5-large` embeddings for querying `company_rules`.
+- [ ] **file-agent:** Integrate Gemini Flash 2.5 for image/PDF extraction at the start of the conversation flow.
+
+### Phase 4: API & Integration (FastAPI)
+- [ ] **Conversations API:** Implement `/api/v1/conversations` endpoints (POST, GET, PATCH).
+- [ ] **Actions API:** Implement `/api/v1/actions` endpoints.
+- [ ] **Rules API:** Implement `/api/v1/rules` endpoints for HR Admin configurations.
+- [ ] **Webhooks API:** Implement `/api/v1/webhooks` endpoints with `X-HRai-Signature` HMAC-SHA256 generation/validation.
+
+### Phase 5: MVP UI & Delivery
+- [ ] **Discord Bot:** Setup `discord.py` bot as the primary employee chat interface.
+- [ ] **Bot to API Connection:** Wire the Discord bot to send messages to the `/api/v1/conversations` endpoint.
+- [ ] **Testing:** End-to-end test of the chat -> intent -> agent -> action -> delivery flow.
+
+### Phase 6: Post-MVP / Backlog
+- [ ] **HR Admin Dashboard:** Build Next.js UI for reviewing actions and managing rules.
+- [ ] **Seed Data:** Create dummy HRIS data for testing/demo purposes.
+- [ ] **Notification System:** Implement scheduled alerts for pending manual reviews.
 
 ---
 
