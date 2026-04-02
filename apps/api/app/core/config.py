@@ -2,13 +2,25 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from functools import lru_cache
 from pathlib import Path
 
-# .env lives at the monorepo root (two levels above apps/api/)
-_ROOT_ENV = str(Path(__file__).resolve().parents[4] / ".env")
+
+def _find_env_file() -> str | None:
+    """Walk up from config.py to find the nearest .env file.
+    Works both locally (monorepo root) and on Railway (apps/api is root).
+    """
+    here = Path(__file__).resolve()
+    for i in range(2, len(here.parents)):
+        candidate = here.parents[i] / ".env"
+        if candidate.exists():
+            return str(candidate)
+    return None
+
+
+_ROOT_ENV = _find_env_file()
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=_ROOT_ENV,
+        env_file=_ROOT_ENV,  # None in Railway → reads from env vars directly
         env_file_encoding="utf-8",
         case_sensitive=False,
     )
