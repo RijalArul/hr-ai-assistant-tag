@@ -444,11 +444,11 @@ When contributing to HR.ai:
 ## TODO List (Implementation Tasks)
 
 ### Phase 1: Setup & Trust Boundaries (Priority)
-- [ ] **Monorepo Init:** Scaffold `apps/api` (FastAPI), `apps/bot` (discord.py), and `packages/shared`.
-- [ ] **Database Setup:** Initialize Supabase PostgreSQL and configure `pgvector` extension.
-- [ ] **Auth & Security:** Implement JWT/Bearer token middleware in FastAPI.
-- [ ] **Trust Boundary Enforcement:** Ensure `employee_id` and `company_id` are strictly injected from the authenticated session context, not the LLM.
-- [ ] **Caching Layer:** Setup LRU in-memory cache (for static data like rules) and Upstash Redis (for dynamic data like sessions/payroll).
+- [x] **Monorepo Init:** Scaffold `apps/api` (FastAPI), `apps/bot` (discord.py), and `packages/shared`.
+- [x] **Database Setup:** Initialize Supabase PostgreSQL and configure `pgvector` extension.
+- [x] **Auth & Security:** Implement JWT/Bearer token middleware in FastAPI.
+- [x] **Trust Boundary Enforcement:** Ensure `employee_id` and `company_id` are strictly injected from the authenticated session context, not the LLM.
+- [x] **Caching Layer:** Setup LRU in-memory cache (for static data like rules) and Upstash Redis (for dynamic data like sessions/payroll).
 
 ### Phase 2: Action Engine
 - [ ] **Schemas:** Define Pydantic models for actions (`document_generation`, `counseling_task`, `followup_chat`, `escalation`, `custom_webhook`).

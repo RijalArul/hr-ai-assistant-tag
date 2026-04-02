@@ -57,6 +57,10 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     jwt_expire_minutes: int = 1440
 
+    # In-memory LRU cache
+    lru_cache_max_entries: int = 256
+    lru_cache_ttl_seconds: int = 900
+
     # App
     app_env: str = "development"
     app_debug: bool = False

@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes.auth import router as auth_router
 from app.core.config import get_settings
+from app.services.cache import init_cache_registry, close_cache_registry
 from app.services.redis import init_redis, close_redis
 from app.api.routes.health import router as health_router
 
@@ -15,8 +16,10 @@ API_PREFIX = "/api/v1"
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    init_cache_registry()
     await init_redis()
     yield
+    close_cache_registry()
     await close_redis()
 
 
