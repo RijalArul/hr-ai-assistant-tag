@@ -239,6 +239,33 @@ manual review must remain the safe override when the product requires it.
 
 ---
 
+## API Documentation Requirements
+
+When adding or changing API routes, documentation is part of the implementation, not a follow-up task.
+
+Required API documentation work:
+- update FastAPI route metadata so `/docs` and `/openapi.json` stay useful
+- define or update request models, response models, and explicit error response models where practical
+- include route `summary`, `description`, and expected status codes
+- include example request and response payloads where practical
+
+Required repository docs:
+- add or update markdown API docs under `docs/api/`
+- document, at minimum: route path, purpose, auth requirement, request body, success response, expected error responses, and status behavior
+- if docs locations change, keep `README.md` pointers aligned
+
+Required Postman docs:
+- add or update a module-level collection under `docs/postman/modules/`
+- group requests by module, for example `auth`, `health`, `conversations`, `actions`, `rules`, `webhooks`
+- for each request, include example request payloads plus saved example responses for success and relevant error cases
+- keep shared variables or environments usable for local development
+- if a combined collection exists, keep it aligned with the module collections
+
+Rule:
+- do not consider an API task complete if the route exists but the docs and Postman examples were not updated with it
+
+---
+
 ## Security and Privacy Guardrails
 
 Treat these as repository-level expectations:
@@ -341,6 +368,7 @@ Before finalizing non-trivial changes, verify:
 - auth/session context assumptions remain aligned
 - cache keys and read/write paths remain aligned
 - response models still match actual outputs
+- API docs, OpenAPI metadata, and Postman examples remain aligned with actual route behavior
 - any sensitive-case overrides still fire in the right path
 
 If the change touches conversation, action, rule, webhook, delivery, auth, identity, or cache, do deep reflection.
@@ -396,6 +424,7 @@ Before saying the task is done, confirm:
 - I did not allow model-generated trusted identity values.
 - I preserved IT Admin vs HR Admin boundaries.
 - I checked affected contracts across files/layers.
+- If I changed API routes, I updated OpenAPI metadata, markdown docs, and Postman collections/examples.
 - I avoided unnecessary abstraction and MVP inflation.
 - I reflected before finalizing.
 - The result is readable for a human maintainer.
