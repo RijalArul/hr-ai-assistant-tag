@@ -357,7 +357,7 @@
                   "value": "application/json"
                 }
               ],
-              "body": "{\n  \"status\": \"ok\",\n  \"database\": \"ok\",\n  \"redis\": \"ok\"\n}"
+              "body": "{\n  \"status\": \"ok\",\n  \"database\": \"ok\",\n  \"redis\": \"ok\",\n  \"lru_cache\": \"ok\"\n}"
             },
             {
               "name": "200 OK - Degraded",
@@ -383,7 +383,7 @@
                   "value": "application/json"
                 }
               ],
-              "body": "{\n  \"status\": \"degraded\",\n  \"database\": \"ok\",\n  \"redis\": \"error: Redis client is not initialized. Call init_redis() first.\"\n}"
+              "body": "{\n  \"status\": \"degraded\",\n  \"database\": \"ok\",\n  \"redis\": \"error: Redis client is not initialized. Call init_redis() first.\",\n  \"lru_cache\": \"ok\"\n}"
             }
           ]
         }

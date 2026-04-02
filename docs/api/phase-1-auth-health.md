@@ -31,7 +31,8 @@ Expected success response:
 {
   "status": "ok",
   "database": "ok",
-  "redis": "ok"
+  "redis": "ok",
+  "lru_cache": "ok"
 }
 ```
 
@@ -41,7 +42,8 @@ Possible degraded response:
 {
   "status": "degraded",
   "database": "ok",
-  "redis": "error: Redis client is not initialized. Call init_redis() first."
+  "redis": "error: Redis client is not initialized. Call init_redis() first.",
+  "lru_cache": "ok"
 }
 ```
 
@@ -50,6 +52,10 @@ Status behavior:
 
 Expected errors:
 - No dedicated error contract at route level right now. Dependency failures are reported inside the response body as `status = degraded`.
+
+Phase 1 cache note:
+- Redis covers dynamic/TTL-oriented data.
+- In-memory LRU cache is initialized for static namespaces: `employee_profile`, `personal_info`, and `company_rules`.
 
 ## POST /api/v1/auth/login
 

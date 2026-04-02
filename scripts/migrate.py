@@ -9,7 +9,6 @@ Requires:
 """
 
 import sys
-import os
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -31,6 +30,11 @@ def load_env() -> dict[str, str]:
     return env
 
 
+def normalize_database_url(database_url: str) -> str:
+    # psycopg2 expects a standard PostgreSQL DSN, not SQLAlchemy async dialects.
+    return database_url.replace("postgresql+asyncpg://", "postgresql://", 1)
+
+
 def main() -> None:
     try:
         import psycopg2
@@ -44,6 +48,8 @@ def main() -> None:
     if not database_url:
         print("[ERROR] DATABASE_URL not found in .env")
         sys.exit(1)
+
+    database_url = normalize_database_url(database_url)
 
     sql_path = ROOT / "migrate-schema.sql"
     if not sql_path.exists():
