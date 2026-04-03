@@ -1,0 +1,563 @@
+{
+  "info": {
+    "_postman_id": "ba4ad7fb-c5e0-4e41-a4fc-1feab76ed001",
+    "name": "HR.ai - Actions Module",
+    "description": "Module-level Postman collection for action review, update, execution, and result lookup.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8000/api/v1"
+    },
+    {
+      "key": "bearerToken",
+      "value": ""
+    },
+    {
+      "key": "actionId",
+      "value": "2cbc3748-69a0-48b9-8ab2-c3d4e5f60701"
+    }
+  ],
+  "item": [
+    {
+      "name": "List Actions",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{bearerToken}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/actions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "actions"
+          ]
+        },
+        "description": "List actions visible to the current bearer token scope. Employees see only their own actions, while HR Admin can review company actions."
+      },
+      "response": [
+        {
+          "name": "200 OK - Action List",
+          "originalRequest": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer <jwt-access-token>"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/actions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "actions"
+              ]
+            }
+          },
+          "status": "OK",
+          "code": 200,
+          "_postman_previewlanguage": "json",
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": "{\n  \"items\": [],\n  \"total\": 0\n}"
+        },
+        {
+          "name": "403 Forbidden - IT Admin Token",
+          "originalRequest": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer <it-admin-jwt>"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/actions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "actions"
+              ]
+            }
+          },
+          "status": "Forbidden",
+          "code": 403,
+          "_postman_previewlanguage": "json",
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": "{\n  \"detail\": \"You do not have permission to access this resource.\"\n}"
+        }
+      ]
+    },
+    {
+      "name": "Get Action",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{bearerToken}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/actions/{{actionId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "actions",
+            "{{actionId}}"
+          ]
+        },
+        "description": "Get one action inside the current company/session scope."
+      },
+      "response": [
+        {
+          "name": "200 OK - Action Detail",
+          "originalRequest": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer <jwt-access-token>"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/actions/{{actionId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "actions",
+                "{{actionId}}"
+              ]
+            }
+          },
+          "status": "OK",
+          "code": 200,
+          "_postman_previewlanguage": "json",
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": "{\n  \"id\": \"50000000-0000-0000-0000-000000000001\",\n  \"company_id\": \"00000000-0000-0000-0000-000000000001\",\n  \"employee_id\": \"20000000-0000-0000-0000-000000000004\",\n  \"conversation_id\": \"40000000-0000-0000-0000-000000000001\",\n  \"type\": \"document_generation\",\n  \"title\": \"Generate salary slip for March 2026\",\n  \"summary\": \"Prepare a payroll document and deliver it to the employee.\",\n  \"status\": \"pending\",\n  \"priority\": \"medium\",\n  \"sensitivity\": \"low\",\n  \"delivery_channels\": [\n    \"email\",\n    \"in_app\"\n  ],\n  \"payload\": {\n    \"type\": \"document_generation\",\n    \"document_type\": \"salary_slip\",\n    \"template_key\": \"payroll_salary_slip_v1\",\n    \"parameters\": {\n      \"month\": 3,\n      \"year\": 2026\n    }\n  },\n  \"execution_result\": null,\n  \"metadata\": {},\n  \"last_executed_at\": null,\n  \"created_at\": \"2026-04-03T10:15:00Z\",\n  \"updated_at\": \"2026-04-03T10:15:00Z\"\n}"
+        },
+        {
+          "name": "404 Not Found - Unknown Action",
+          "originalRequest": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/actions/{{actionId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "actions",
+                "{{actionId}}"
+              ]
+            }
+          },
+          "status": "Not Found",
+          "code": 404,
+          "_postman_previewlanguage": "json",
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": "{\n  \"detail\": \"Action not found.\"\n}"
+        }
+      ]
+    },
+    {
+      "name": "Update Action",
+      "request": {
+        "method": "PATCH",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{bearerToken}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/actions/{{actionId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "actions",
+            "{{actionId}}"
+          ]
+        },
+        "description": "Update action metadata or status. Requires HR Admin.",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"status\": \"ready\",\n  \"priority\": \"high\",\n  \"delivery_channels\": [\n    \"manual_review\"\n  ]\n}"
+        }
+      },
+      "response": [
+        {
+          "name": "200 OK - Action Updated",
+          "originalRequest": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer <hr-admin-jwt>"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/actions/{{actionId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "actions",
+                "{{actionId}}"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"ready\",\n  \"priority\": \"high\",\n  \"delivery_channels\": [\n    \"manual_review\"\n  ]\n}"
+            }
+          },
+          "status": "OK",
+          "code": 200,
+          "_postman_previewlanguage": "json",
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": "{\n  \"id\": \"50000000-0000-0000-0000-000000000001\",\n  \"status\": \"ready\",\n  \"priority\": \"high\"\n}"
+        },
+        {
+          "name": "403 Forbidden - Employee Token",
+          "originalRequest": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer <employee-jwt>"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/actions/{{actionId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "actions",
+                "{{actionId}}"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"ready\"\n}"
+            }
+          },
+          "status": "Forbidden",
+          "code": 403,
+          "_postman_previewlanguage": "json",
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": "{\n  \"detail\": \"You do not have permission to access this resource.\"\n}"
+        },
+        {
+          "name": "409 Conflict - Terminal Action",
+          "originalRequest": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer <hr-admin-jwt>"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/actions/{{actionId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "actions",
+                "{{actionId}}"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"priority\": \"high\"\n}"
+            }
+          },
+          "status": "Conflict",
+          "code": 409,
+          "_postman_previewlanguage": "json",
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": "{\n  \"detail\": \"Terminal actions cannot be modified manually.\"\n}"
+        }
+      ]
+    },
+    {
+      "name": "Execute Action",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{bearerToken}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/actions/{{actionId}}/execute",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "actions",
+            "{{actionId}}",
+            "execute"
+          ]
+        },
+        "description": "Execute one action and queue delivery work items. Requires HR Admin. Sensitive actions are normalized to manual review.",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"delivery_channels\": [\n    \"manual_review\"\n  ],\n  \"trigger_delivery\": true,\n  \"executor_note\": \"Escalated for HR review before outbound delivery.\"\n}"
+        }
+      },
+      "response": [
+        {
+          "name": "200 OK - Action Executed",
+          "originalRequest": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer <hr-admin-jwt>"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/actions/{{actionId}}/execute",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "actions",
+                "{{actionId}}",
+                "execute"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"delivery_channels\": [\n    \"manual_review\"\n  ],\n  \"trigger_delivery\": true,\n  \"executor_note\": \"Escalated for HR review before outbound delivery.\"\n}"
+            }
+          },
+          "status": "OK",
+          "code": 200,
+          "_postman_previewlanguage": "json",
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": "{\n  \"action\": {\n    \"id\": \"50000000-0000-0000-0000-000000000001\",\n    \"status\": \"completed\",\n    \"delivery_channels\": [\n      \"manual_review\"\n    ]\n  },\n  \"delivery_channels\": [\n    \"manual_review\"\n  ],\n  \"delivery_requested\": true,\n  \"execution_log\": {\n    \"event_name\": \"action.executed\",\n    \"status\": \"completed\"\n  },\n  \"delivery_requests\": [\n    {\n      \"id\": \"52000000-0000-0000-0000-000000000001\",\n      \"action_id\": \"50000000-0000-0000-0000-000000000001\",\n      \"channel\": \"manual_review\",\n      \"delivery_status\": \"queued\",\n      \"target_reference\": \"hr_admin_review_queue\",\n      \"payload\": {\n        \"action_type\": \"document_generation\"\n      },\n      \"created_at\": \"2026-04-03T10:20:00Z\"\n    }\n  ],\n  \"webhook_deliveries_queued\": 0\n}"
+        },
+        {
+          "name": "403 Forbidden - Employee Token",
+          "originalRequest": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer <employee-jwt>"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/actions/{{actionId}}/execute",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "actions",
+                "{{actionId}}",
+                "execute"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"trigger_delivery\": true\n}"
+            }
+          },
+          "status": "Forbidden",
+          "code": 403,
+          "_postman_previewlanguage": "json",
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": "{\n  \"detail\": \"You do not have permission to access this resource.\"\n}"
+        },
+        {
+          "name": "409 Conflict - Completed Action",
+          "originalRequest": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer <hr-admin-jwt>"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/actions/{{actionId}}/execute",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "actions",
+                "{{actionId}}",
+                "execute"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"trigger_delivery\": true\n}"
+            }
+          },
+          "status": "Conflict",
+          "code": 409,
+          "_postman_previewlanguage": "json",
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": "{\n  \"detail\": \"Completed actions cannot be executed twice.\"\n}"
+        }
+      ]
+    },
+    {
+      "name": "Get Action Result",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{bearerToken}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/actions/{{actionId}}/result",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "actions",
+            "{{actionId}}",
+            "result"
+          ]
+        },
+        "description": "Get the latest stored execution result for one action. Accessible to the employee owner and HR Admin."
+      },
+      "response": [
+        {
+          "name": "200 OK - Action Result",
+          "originalRequest": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer <jwt-access-token>"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/actions/{{actionId}}/result",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "actions",
+                "{{actionId}}",
+                "result"
+              ]
+            }
+          },
+          "status": "OK",
+          "code": 200,
+          "_postman_previewlanguage": "json",
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": "{\n  \"action_id\": \"50000000-0000-0000-0000-000000000001\",\n  \"status\": \"completed\",\n  \"execution_result\": {\n    \"delivery_mode\": \"manual_review_only\"\n  },\n  \"last_executed_at\": \"2026-04-03T10:20:00Z\"\n}"
+        }
+      ]
+    }
+  ]
+}

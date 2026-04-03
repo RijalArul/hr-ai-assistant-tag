@@ -2,7 +2,7 @@
   "info": {
     "_postman_id": "3c7c66ad-39b9-4520-85ea-72bb4f5bf5c8",
     "name": "HR.ai - Auth Module",
-    "description": "Module-level Postman collection for authentication routes. Includes request examples and saved success/error responses.",
+    "description": "Module-level Postman collection for authentication routes. Includes employee, HR admin, and IT admin login helpers plus saved success/error responses.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -15,6 +15,14 @@
       "value": "fakhrul.rijal@majubersama.id"
     },
     {
+      "key": "hrAdminEmail",
+      "value": "siti.rahayu@majubersama.id"
+    },
+    {
+      "key": "itAdminEmail",
+      "value": "andi.wirawan@majubersama.id"
+    },
+    {
       "key": "invalidEmployeeEmail",
       "value": "unknown@majubersama.id"
     },
@@ -25,23 +33,7 @@
   ],
   "item": [
     {
-      "name": "Login",
-      "event": [
-        {
-          "listen": "test",
-          "script": {
-            "type": "text/javascript",
-            "exec": [
-              "if (pm.response.code === 200) {",
-              "  const body = pm.response.json();",
-              "  if (body.access_token) {",
-              "    pm.collectionVariables.set('bearerToken', body.access_token);",
-              "  }",
-              "}"
-            ]
-          }
-        }
-      ],
+      "name": "Login Employee",
       "request": {
         "method": "POST",
         "header": [
@@ -50,10 +42,6 @@
             "value": "application/json"
           }
         ],
-        "body": {
-          "mode": "raw",
-          "raw": "{\n  \"email\": \"{{employeeEmail}}\"\n}"
-        },
         "url": {
           "raw": "{{baseUrl}}/auth/login",
           "host": [
@@ -64,11 +52,15 @@
             "login"
           ]
         },
-        "description": "Login using employee email and generate a bearer token."
+        "description": "Login using employee email and store the returned JWT bearer token in `bearerToken`.",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"email\": \"{{employeeEmail}}\"\n}"
+        }
       },
       "response": [
         {
-          "name": "200 OK - Login Success",
+          "name": "200 OK - Login Employee Success",
           "originalRequest": {
             "method": "POST",
             "header": [
@@ -77,10 +69,6 @@
                 "value": "application/json"
               }
             ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"email\": \"fakhrul.rijal@majubersama.id\"\n}"
-            },
             "url": {
               "raw": "{{baseUrl}}/auth/login",
               "host": [
@@ -90,6 +78,10 @@
                 "auth",
                 "login"
               ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{employeeEmail}}\"\n}"
             }
           },
           "status": "OK",
@@ -113,10 +105,6 @@
                 "value": "application/json"
               }
             ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"email\": \"unknown@majubersama.id\"\n}"
-            },
             "url": {
               "raw": "{{baseUrl}}/auth/login",
               "host": [
@@ -126,6 +114,10 @@
                 "auth",
                 "login"
               ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{invalidEmployeeEmail}}\"\n}"
             }
           },
           "status": "Unauthorized",
@@ -138,9 +130,54 @@
             }
           ],
           "body": "{\n  \"detail\": \"Invalid email.\"\n}"
-        },
+        }
+      ],
+      "event": [
         {
-          "name": "409 Conflict - Ambiguous Email",
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.response.code === 200) {",
+              "  const body = pm.response.json();",
+              "  if (body.access_token) {",
+              "    pm.collectionVariables.set('bearerToken', body.access_token);",
+              "  }",
+              "}"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Login HR Admin",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/auth/login",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "auth",
+            "login"
+          ]
+        },
+        "description": "Login using hr_admin email and store the returned JWT bearer token in `bearerToken`.",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"email\": \"{{hrAdminEmail}}\"\n}"
+        }
+      },
+      "response": [
+        {
+          "name": "200 OK - Login HR Admin Success",
           "originalRequest": {
             "method": "POST",
             "header": [
@@ -149,10 +186,6 @@
                 "value": "application/json"
               }
             ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"email\": \"duplicate@example.com\"\n}"
-            },
             "url": {
               "raw": "{{baseUrl}}/auth/login",
               "host": [
@@ -162,10 +195,14 @@
                 "auth",
                 "login"
               ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{hrAdminEmail}}\"\n}"
             }
           },
-          "status": "Conflict",
-          "code": 409,
+          "status": "OK",
+          "code": 200,
           "_postman_previewlanguage": "json",
           "header": [
             {
@@ -173,10 +210,10 @@
               "value": "application/json"
             }
           ],
-          "body": "{\n  \"detail\": \"Email matches multiple companies. Phase 1 login expects a globally unique company email.\"\n}"
+          "body": "{\n  \"access_token\": \"<jwt-access-token>\",\n  \"token_type\": \"bearer\",\n  \"session\": {\n    \"employee_id\": \"20000000-0000-0000-0000-000000000001\",\n    \"company_id\": \"00000000-0000-0000-0000-000000000001\",\n    \"email\": \"siti.rahayu@majubersama.id\",\n    \"role\": \"hr_admin\"\n  }\n}"
         },
         {
-          "name": "422 Unprocessable Entity - Invalid Request Body",
+          "name": "401 Unauthorized - Invalid Email",
           "originalRequest": {
             "method": "POST",
             "header": [
@@ -185,10 +222,6 @@
                 "value": "application/json"
               }
             ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"email\": \"not-an-email\"\n}"
-            },
             "url": {
               "raw": "{{baseUrl}}/auth/login",
               "host": [
@@ -198,10 +231,14 @@
                 "auth",
                 "login"
               ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{invalidEmployeeEmail}}\"\n}"
             }
           },
-          "status": "Unprocessable Entity",
-          "code": 422,
+          "status": "Unauthorized",
+          "code": 401,
           "_postman_previewlanguage": "json",
           "header": [
             {
@@ -209,7 +246,140 @@
               "value": "application/json"
             }
           ],
-          "body": "{\n  \"detail\": [\n    {\n      \"type\": \"value_error\",\n      \"loc\": [\"body\", \"email\"],\n      \"msg\": \"Value error, email must be a valid email address\",\n      \"input\": \"not-an-email\"\n    }\n  ]\n}"
+          "body": "{\n  \"detail\": \"Invalid email.\"\n}"
+        }
+      ],
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.response.code === 200) {",
+              "  const body = pm.response.json();",
+              "  if (body.access_token) {",
+              "    pm.collectionVariables.set('bearerToken', body.access_token);",
+              "  }",
+              "}"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Login IT Admin",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/auth/login",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "auth",
+            "login"
+          ]
+        },
+        "description": "Login using it_admin email and store the returned JWT bearer token in `bearerToken`.",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"email\": \"{{itAdminEmail}}\"\n}"
+        }
+      },
+      "response": [
+        {
+          "name": "200 OK - Login IT Admin Success",
+          "originalRequest": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "login"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{itAdminEmail}}\"\n}"
+            }
+          },
+          "status": "OK",
+          "code": 200,
+          "_postman_previewlanguage": "json",
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": "{\n  \"access_token\": \"<jwt-access-token>\",\n  \"token_type\": \"bearer\",\n  \"session\": {\n    \"employee_id\": \"20000000-0000-0000-0000-000000000002\",\n    \"company_id\": \"00000000-0000-0000-0000-000000000001\",\n    \"email\": \"andi.wirawan@majubersama.id\",\n    \"role\": \"it_admin\"\n  }\n}"
+        },
+        {
+          "name": "401 Unauthorized - Invalid Email",
+          "originalRequest": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "login"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{invalidEmployeeEmail}}\"\n}"
+            }
+          },
+          "status": "Unauthorized",
+          "code": 401,
+          "_postman_previewlanguage": "json",
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": "{\n  \"detail\": \"Invalid email.\"\n}"
+        }
+      ],
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.response.code === 200) {",
+              "  const body = pm.response.json();",
+              "  if (body.access_token) {",
+              "    pm.collectionVariables.set('bearerToken', body.access_token);",
+              "  }",
+              "}"
+            ]
+          }
         }
       ]
     },

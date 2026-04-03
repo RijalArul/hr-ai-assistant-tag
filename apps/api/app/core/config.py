@@ -37,20 +37,36 @@ class Settings(BaseSettings):
 
     # MiniMax LLM
     minimax_api_key: str
-    minimax_api_base: str = "https://api.minimaxi.chat/v1"
+    minimax_api_base: str = "https://api.minimaxi.com/v1"
+    minimax_model: str = "MiniMax-M2.7"
+    minimax_timeout_seconds: int = 20
 
     # Discord
     discord_application_id: str
     discord_public_key: str
     discord_bot_token: str = ""
 
-    # Gemini (file extraction)
+    # Gemini
     gemini_api_key: str
     gemini_model: str = "gemini-2.5-flash"
-
-    # HuggingFace Embeddings
-    huggingface_api_key: str
+    gemini_timeout_seconds: int = 10
+    gemini_classifier_timeout_seconds: int = 20
+    gemini_embedding_model: str = "gemini-embedding-001"
+    gemini_embedding_output_dimensionality: int = 1024
+    # Deprecated compatibility fields. Kept so older local .env files
+    # do not break while embeddings have moved to Gemini.
+    huggingface_api_key: str = ""
     embedding_model: str = "intfloat/multilingual-e5-large"
+
+    # S3-compatible object storage
+    storage_s3_endpoint_url: str = ""
+    storage_s3_bucket_name: str = ""
+    storage_s3_access_key_id: str = ""
+    storage_s3_secret_access_key: str = ""
+    storage_s3_region: str = "auto"
+    storage_s3_presign_ttl_seconds: int = 3600
+    storage_s3_connect_timeout_seconds: int = 5
+    storage_s3_read_timeout_seconds: int = 10
 
     # Auth
     jwt_secret: str
@@ -65,6 +81,7 @@ class Settings(BaseSettings):
     app_env: str = "development"
     app_debug: bool = False
     cors_origins: str = "http://localhost:3000"
+    phase3_use_remote_providers: bool = False
 
     @property
     def is_production(self) -> bool:

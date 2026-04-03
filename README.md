@@ -17,6 +17,7 @@ At a high level, HR.ai:
 - retrieves structured HR data when needed
 - classifies intent and sensitivity
 - generates follow-up actions for HR teams
+- can auto-complete selected low-risk self-service documents such as payslips
 - delivers execution results through configurable channels such as email, webhook, in-app notification, or manual review
 
 The product direction supports:
@@ -171,6 +172,12 @@ Rules determine which actions are created for which intents. The intended operat
 - **IT Admin** configures rule templates
 - **HR Admin** toggles the active rules
 
+Current implemented automation includes:
+- rule-driven action creation from conversation messages
+- linked action lookup from the conversation API
+- low-risk payslip document generation with PDF output
+- optional S3-compatible object storage for generated documents
+
 ---
 
 ## Security and Trust Boundaries
@@ -239,17 +246,19 @@ Current cache philosophy:
 
 ### Backend
 - **FastAPI**
-- **LangChain Python (LCEL)**
+- **Custom orchestration/services layer** for routing, semantic retrieval, and action automation
+- **LangChain-ready stack direction**, but not the primary runtime abstraction today
 - **discord.py** for the early employee chat interface path
 
 ### Models
-- **MiniMax M2.7** as primary conversational/orchestration model
+- **MiniMax M2.7** as the primary classifier/judge for ambiguous routing cases
 - **Gemini Flash 2.5** for file extraction
-- **multilingual-e5-large** for policy embeddings
+- **Gemini Embeddings** for hosted semantic retrieval
 
 ### Data
 - **Supabase PostgreSQL**
 - **pgvector** for vector search on policy content
+- **S3-compatible object storage** for generated documents such as payslip PDFs
 
 ### Cache
 - **LRU in-memory cache**
@@ -264,6 +273,22 @@ Current cache philosophy:
 - **Netlify** for frontend
 - **GitHub Actions** for CI/CD
 - **Makefile** as the unified entry point for a mixed Python + JS monorepo
+
+---
+
+## Current Implementation Status
+
+The repository is no longer only a roadmap skeleton. The current implemented state is:
+
+- **Phase 1**: JWT auth, trusted session scoping, database wiring, and cache foundation are in place.
+- **Phase 2**: action contracts, rules, webhooks, execution flow, and delivery queue records are implemented.
+- **Phase 3**: orchestrator, `hr-data-agent`, `company-agent`, `file-agent`, semantic intent retrieval, and Stage 2 `agent_capabilities` routing are implemented.
+- **Phase 4**: conversations API, linked conversation actions, and Phase 3 integration through public endpoints are implemented.
+
+Known current MVP behavior:
+- `POST /conversations/{id}/messages` can create `triggered_actions` when a matching Phase 2 rule fires.
+- payslip requests can create and auto-execute a `document_generation` action when the request is low-risk.
+- generated payslip PDFs are stored in S3-compatible object storage when configured, with inline fallback retained as a safety path.
 
 ---
 
@@ -285,6 +310,10 @@ https://api.hr-ai.io/api/v1
 - `POST /conversations/{id}/messages`
 - `GET /conversations/{id}/actions`
 - `PATCH /conversations/{id}`
+
+Notes:
+- `POST /conversations/{id}/messages` returns orchestration details and may also return `triggered_actions`.
+- for eligible `payroll_document_request` messages, the conversation flow can create and auto-execute a linked payslip action.
 
 ### Actions
 - `GET /actions`
@@ -311,10 +340,25 @@ Current docs for implemented endpoints:
 - Interactive docs: `/docs`
 - OpenAPI JSON: `/openapi.json`
 - Markdown reference: `docs/api/phase-1-auth-health.md`
+- Markdown reference: `docs/api/phase-2-action-engine.md`
+- Markdown reference: `docs/api/phase-4-conversations.md`
+- Workflow guide (ID): `docs/architecture/phase-1-workflow-id.md`
+- Workflow guide (ID): `docs/architecture/phase-2-workflow-id.md`
+- Workflow guide (ID): `docs/architecture/phase-3-workflow-id.md`
+- Semantic routing design (ID): `docs/architecture/phase-3-semantic-routing-id.md`
+  - Includes Stage 1 semantic intent retrieval and Stage 2 `agent_capabilities` routing
 - Postman combined collection: `docs/postman/hr-ai-phase-1.postman_collection.json`
 - Postman module collection - auth: `docs/postman/modules/auth.postman_collection.json`
 - Postman module collection - health: `docs/postman/modules/health.postman_collection.json`
+- Postman module collection - conversations: `docs/postman/modules/conversations.postman_collection.json`
+- Postman module collection - actions: `docs/postman/modules/actions.postman_collection.json`
+- Postman module collection - rules: `docs/postman/modules/rules.postman_collection.json`
+- Postman module collection - webhooks: `docs/postman/modules/webhooks.postman_collection.json`
 - Postman environment: `docs/postman/hr-ai-local.postman_environment.json`
+
+Useful sync scripts for vector-backed retrieval:
+- `python scripts/sync_company_rule_chunks.py`
+- `python scripts/sync_semantic_routing_embeddings.py`
 
 ---
 
@@ -325,6 +369,11 @@ After an action is executed, HR.ai can deliver the result through one or more ch
 - `webhook`
 - `in_app`
 - `manual_review`
+
+For generated documents:
+- execution results can include document metadata and signed download URLs
+- generated PDFs are uploaded to S3-compatible object storage when configured
+- if object storage is unavailable, the current MVP keeps an inline fallback rather than failing the action entirely
 
 For sensitive cases, the default behavior is **manual review only**, even if other delivery methods are configured.
 
@@ -352,6 +401,151 @@ Employee -> Chat Interface -> Conversation AI -> Tool / Connector Access
         -> Intent + Sensitivity Classification -> Action Engine
         -> Delivery Layer / HR Admin Review / External Webhook
 ```
+
+---
+
+## How to Run
+
+### Prerequisites
+
+Before running the project locally, make sure you have:
+- Python 3.11+ installed
+- Node.js 18+ and `npm`
+- a PostgreSQL database available for `DATABASE_URL` (Supabase is the intended default)
+- Redis available for `REDIS_URL`
+
+### 1. Configure environment variables
+
+Copy `.env.example` to `.env`, then fill in the values you actually want to use.
+
+Minimum variables for local API development:
+- `DATABASE_URL`
+- `REDIS_URL`
+- `JWT_SECRET`
+- `JWT_ALGORITHM`
+- `JWT_EXPIRE_MINUTES`
+- `APP_ENV`
+- `APP_DEBUG`
+- `CORS_ORIGINS`
+
+If you also want to run the bot or later AI integrations, fill these too:
+- `DISCORD_BOT_TOKEN`
+- `MINIMAX_API_KEY`
+- `GEMINI_API_KEY`
+- `GEMINI_EMBEDDING_MODEL`
+- `PHASE3_USE_REMOTE_PROVIDERS`
+
+If you want generated documents to upload to object storage:
+- `STORAGE_S3_ENDPOINT_URL`
+- `STORAGE_S3_BUCKET_NAME`
+- `STORAGE_S3_ACCESS_KEY_ID`
+- `STORAGE_S3_SECRET_ACCESS_KEY`
+- `STORAGE_S3_REGION`
+- `STORAGE_S3_PRESIGN_TTL_SECONDS`
+
+Legacy compatibility note:
+- `HUGGINGFACE_API_KEY` and `EMBEDDING_MODEL` are still accepted by settings for backwards compatibility, but the active embedding path now uses hosted Gemini embeddings.
+
+### 2. Install dependencies
+
+You can use the Makefile:
+
+```bash
+make install
+```
+
+Or install per app manually:
+
+```bash
+cd apps/api && pip install -r requirements.txt
+cd apps/bot && pip install -r requirements.txt
+cd apps/web && npm install
+```
+
+### 3. Run database migration
+
+Apply the schema first:
+
+```bash
+make migrate
+```
+
+If you want demo data for local testing:
+
+```bash
+make seed
+```
+
+If you want to reset and reseed:
+
+```bash
+make seed-reset
+```
+
+### 4. Start the API
+
+Using Makefile:
+
+```bash
+make api
+```
+
+Manual command:
+
+```bash
+cd apps/api
+uvicorn main:app --reload --port 8080
+```
+
+API URLs:
+- API base: `http://localhost:8080/api/v1`
+- Swagger docs: `http://localhost:8080/docs`
+- OpenAPI JSON: `http://localhost:8080/openapi.json`
+
+### 5. Start the web app
+
+Using Makefile:
+
+```bash
+make web
+```
+
+Manual command:
+
+```bash
+npm --prefix apps/web run dev
+```
+
+Default web URL:
+- `http://localhost:3000`
+
+### 6. Start the Discord bot
+
+Make sure `DISCORD_BOT_TOKEN` is already set in `.env`.
+
+Using Makefile:
+
+```bash
+make bot
+```
+
+Manual command:
+
+```bash
+cd apps/bot
+python main.py
+```
+
+### 7. Recommended local workflow
+
+For the current MVP repo shape, the most practical order is:
+1. fill `.env`
+2. run `make install`
+3. run `make migrate`
+4. optionally run `make seed`
+5. start `make api`
+6. start `make web`
+7. start `make bot` only if you want to test the Discord path
 
 ---
 
@@ -416,7 +610,7 @@ If this repository evolves as a monorepo, a practical layout would be:
 
 ```text
 apps/
-  api/          # FastAPI + LangChain
+  api/          # FastAPI + orchestration/services layer
   bot/          # discord.py
   web/          # Next.js
 packages/
@@ -441,32 +635,50 @@ When contributing to HR.ai:
 
 ---
 
+## Implementation Roadmap Overview
+
+### Phase 1: Setup & Trust Boundaries
+
+Phase 1 establishes the operational foundation of HR.ai before any higher-level AI workflow is allowed to act on behalf of the system. The main purpose of this phase is to make identity, access, and infrastructure trustworthy enough for later HR features. This includes the initial monorepo structure, database connectivity, JWT-based authentication, session handling, and cache setup for both static and dynamic data.
+
+Just as importantly, Phase 1 locks in the most critical safety rule in the product: `employee_id` and `company_id` must come from trusted authenticated session context, never from model-generated text or user prompts. In other words, Phase 1 is about making sure the platform knows who the employee is, which company context is active, and which system components can be trusted before the AI starts reading personal HR data or triggering any follow-up workflow.
+
+### Phase 2: Action Engine
+
+Phase 2 introduces the action layer that turns a resolved conversation into structured operational follow-up. Instead of stopping at answering a question, the system begins producing explicit action objects such as document generation, counseling tasks, follow-up chats, escalations, or custom webhooks. This phase defines the action contract at the application layer, persists actions and their logs in the database, and prepares the system to track status, execution, and delivery outcomes consistently.
+
+The core goal of Phase 2 is consistency and safe downstream handling. Every action should have a clear schema, lifecycle, and delivery path so multiple actions can be created, processed, and summarized without ambiguity. This phase also introduces the sensitive-case safeguard that forces `manual_review` as the safe default whenever an action is classified as sensitive, preventing higher-risk cases from being delivered automatically.
+
+---
+
 ## TODO List (Implementation Tasks)
 
 ### Phase 1: Setup & Trust Boundaries (Priority)
-- [x] **Monorepo Init:** Scaffold `apps/api` (FastAPI), `apps/bot` (discord.py), and `packages/shared`.
-- [x] **Database Setup:** Initialize Supabase PostgreSQL and configure `pgvector` extension.
-- [x] **Auth & Security:** Implement JWT/Bearer token middleware in FastAPI.
-- [x] **Trust Boundary Enforcement:** Ensure `employee_id` and `company_id` are strictly injected from the authenticated session context, not the LLM.
-- [x] **Caching Layer:** Setup LRU in-memory cache (for static data like rules) and Upstash Redis (for dynamic data like sessions/payroll).
+- [x] **Monorepo Foundation:** Scaffold `apps/api` (FastAPI), `apps/bot` (discord.py), and `packages/shared`.
+- [x] **Database Foundation:** Initialize Supabase PostgreSQL and configure `pgvector` extension.
+- [x] **Auth & Session Security:** Implement JWT/Bearer token middleware in FastAPI.
+- [x] **Trusted Identity Boundary:** Ensure `employee_id` and `company_id` are strictly injected from authenticated session context, not the LLM.
+- [x] **Cache Foundation:** Setup LRU in-memory cache (for static data like rules) and Upstash Redis (for dynamic data like sessions/payroll).
 
 ### Phase 2: Action Engine
-- [ ] **Schemas:** Define Pydantic models for actions (`document_generation`, `counseling_task`, `followup_chat`, `escalation`, `custom_webhook`).
-- [ ] **Database Schema:** Create tables for actions, logs, and rules mapping.
-- [ ] **Delivery Logic:** Implement delivery routing (email, webhook, in_app, manual_review).
-- [ ] **Sensitive Guardrail:** Enforce `manual_review` default for any action classified as sensitive.
+- [x] **Action Schemas:** Define Pydantic models for action contracts (`document_generation`, `counseling_task`, `followup_chat`, `escalation`, `custom_webhook`).
+- [x] **Action Persistence Schema:** Create database tables for actions, logs, and rules mapping.
+- [x] **Delivery Routing:** Implement delivery routing across `email`, `webhook`, `in_app`, and `manual_review`.
+- [x] **Sensitive-Case Safeguard:** Enforce `manual_review` as the default path for any action classified as sensitive.
 
 ### Phase 3: Agent Architecture (AI Layer)
-- [ ] **Orchestrator:** Implement intent classification and sensitivity detection (using MiniMax M2.7).
-- [ ] **hr-data-agent (TAG):** Build LangChain tools to retrieve structured data (payroll, attendance, time_offs) safely using the session's `employee_id`.
-- [ ] **company-agent (RAG):** Implement vector search using `multilingual-e5-large` embeddings for querying `company_rules`.
-- [ ] **file-agent:** Integrate Gemini Flash 2.5 for image/PDF extraction at the start of the conversation flow.
+- [x] **Orchestrator:** Implement intent classification, sensitivity detection, semantic routing, and final synthesis.
+- [x] **hr-data-agent (TAG):** Retrieve structured payroll, attendance, time off, and profile data safely using the session's `employee_id`.
+- [x] **company-agent (RAG/TAG hybrid):** Implement hosted Gemini embedding retrieval for `company_rules` with lexical fallback.
+- [x] **file-agent:** Integrate Gemini Flash 2.5 for image/PDF extraction at the start of the conversation flow.
 
 ### Phase 4: API & Integration (FastAPI)
-- [ ] **Conversations API:** Implement `/api/v1/conversations` endpoints (POST, GET, PATCH).
-- [ ] **Actions API:** Implement `/api/v1/actions` endpoints.
-- [ ] **Rules API:** Implement `/api/v1/rules` endpoints for HR Admin configurations.
-- [ ] **Webhooks API:** Implement `/api/v1/webhooks` endpoints with `X-HRai-Signature` HMAC-SHA256 generation/validation.
+- [x] **Conversations API:** Implement `/api/v1/conversations` endpoints (POST, GET, PATCH) plus linked message orchestration.
+- [x] **Actions API:** Implement `/api/v1/actions` endpoints.
+- [x] **Rules API:** Implement `/api/v1/rules` endpoints for HR Admin configurations.
+- [x] **Webhooks API:** Implement `/api/v1/webhooks` endpoints with `X-HRai-Signature` HMAC-SHA256 generation/validation.
+- [x] **Conversation-to-Action Automation:** Link eligible conversation outcomes to rule-driven `document_generation` actions.
+- [x] **Generated Document Storage:** Support S3-compatible storage for generated payslip PDFs with signed download URLs.
 
 ### Phase 5: MVP UI & Delivery
 - [ ] **Discord Bot:** Setup `discord.py` bot as the primary employee chat interface.
@@ -482,6 +694,6 @@ When contributing to HR.ai:
 
 ## Status
 
-**Project phase:** MVP / Hackathon architecture defined, implementation in progress.
+**Project phase:** MVP implementation is active and usable for API-level flows, with production hardening still in progress.
 
 If you are building inside this repository, start from the architecture, trust boundaries, and action workflow first. Those are the real backbone of HR.ai.

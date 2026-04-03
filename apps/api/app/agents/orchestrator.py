@@ -1,0 +1,1416 @@
+from __future__ import annotations
+
+import asyncio
+from collections import OrderedDict
+from time import perf_counter
+from typing import Any
+
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.agents.company_agent import run_company_agent
+from app.agents.file_agent import run_file_agent
+from app.agents.hr_data_agent import run_hr_data_agent
+from app.core.security import SessionContext
+from app.models import (
+    AgentRoute,
+    AgentTraceStep,
+    ConversationIntent,
+    IntentAssessment,
+    OrchestratorRequest,
+    OrchestratorResponse,
+    SensitivityAssessment,
+)
+from app.services.cache import get_cache
+from app.services.db import AsyncSessionLocal
+from app.services.minimax import ProviderClassificationResult, classify_with_minimax
+from app.services.semantic_router import (
+    AgentCapabilityResult,
+    SemanticIntentResult,
+    retrieve_agent_capabilities,
+    retrieve_intent_candidates,
+)
+from shared import SensitivityLevel
+
+INTENT_KEYWORDS: OrderedDict[ConversationIntent, list[str]] = OrderedDict(
+    [
+        (
+            ConversationIntent.PAYROLL_DOCUMENT_REQUEST,
+            ["slip gaji", "salary slip", "payslip", "pay slip"],
+        ),
+        (
+            ConversationIntent.PAYROLL_INFO,
+            ["gaji", "salary", "payroll", "bpjs", "pph21", "kompensasi", "potongan"],
+        ),
+        (
+            ConversationIntent.ATTENDANCE_REVIEW,
+            [
+                "attendance",
+                "kehadiran",
+                "absen",
+                "presensi",
+                "telat",
+                "terlambat",
+                "check in",
+                "check-in",
+                "wfh",
+                "jam masuk",
+                "masuk kantor",
+                "jam masuk kantor",
+                "rata rata masuk",
+                "rata-rata masuk",
+            ],
+        ),
+        (
+            ConversationIntent.TIME_OFF_BALANCE,
+            ["sisa cuti", "jatah cuti", "saldo cuti", "leave balance"],
+        ),
+        (
+            ConversationIntent.TIME_OFF_REQUEST_STATUS,
+            ["status cuti", "pengajuan cuti", "leave request", "cuti saya"],
+        ),
+        (
+            ConversationIntent.PERSONAL_PROFILE,
+            [
+                "profil saya",
+                "data saya",
+                "posisi saya",
+                "join date",
+                "tanggal join",
+                "atasan saya",
+                "manager saya",
+            ],
+        ),
+        (
+            ConversationIntent.COMPANY_POLICY,
+            ["kebijakan", "aturan", "policy", "peraturan", "kode etik", "jam kerja", "carry over"],
+        ),
+        (
+            ConversationIntent.COMPANY_STRUCTURE,
+            ["struktur", "departemen", "department", "tim hr", "kepala departemen", "head of"],
+        ),
+        (
+            ConversationIntent.EMPLOYEE_WELLBEING_CONCERN,
+            ["pelecehan", "diskriminasi", "dibully", "burnout", "depresi", "stress berat", "suicid", "bunuh diri"],
+        ),
+    ]
+)
+
+DEFAULT_SENSITIVITY_KEYWORDS = {
+    SensitivityLevel.HIGH: [
+        "bunuh diri",
+        "suicide",
+        "self harm",
+        "pelecehan seksual",
+        "sexual harassment",
+        "kekerasan",
+    ],
+    SensitivityLevel.MEDIUM: [
+        "pelecehan",
+        "diskriminasi",
+        "dibully",
+        "burnout",
+        "depresi",
+        "stress berat",
+        "toxic",
+        "intimidasi",
+    ],
+}
+
+HR_DATA_INTENTS = {
+    ConversationIntent.PAYROLL_INFO,
+    ConversationIntent.PAYROLL_DOCUMENT_REQUEST,
+    ConversationIntent.ATTENDANCE_REVIEW,
+    ConversationIntent.TIME_OFF_BALANCE,
+    ConversationIntent.TIME_OFF_REQUEST_STATUS,
+    ConversationIntent.PERSONAL_PROFILE,
+}
+COMPANY_INTENTS = {
+    ConversationIntent.COMPANY_POLICY,
+    ConversationIntent.COMPANY_STRUCTURE,
+}
+
+LOCAL_CLASSIFIER_CONFIDENCE_THRESHOLD = 0.78
+SEMANTIC_PROVIDER_HINT_THRESHOLD = {
+    "vector": 0.52,
+    "lexical": 0.34,
+}
+SEMANTIC_DIRECT_FALLBACK_THRESHOLD = {
+    "vector": 0.72,
+    "lexical": 0.55,
+}
+AGENT_CAPABILITY_ROUTE_THRESHOLD = {
+    "vector": 0.58,
+    "lexical": 0.42,
+}
+KNOWN_AGENT_KEYS = {"hr-data-agent", "company-agent", "file-agent"}
+
+
+def _normalize_message(message: str) -> str:
+    return " ".join(message.lower().strip().split())
+
+
+def _build_classification_message(
+    message: str,
+    attachment_names: list[str] | None = None,
+    attachment_preview: str | None = None,
+) -> str:
+    parts = [message.strip()]
+
+    if attachment_names:
+        parts.append(f"Attachments: {', '.join(attachment_names)}")
+
+    if attachment_preview:
+        parts.append(f"Attachment preview: {attachment_preview[:800]}")
+
+    return "\n".join(part for part in parts if part)
+
+
+def _build_weighted_keywords(
+    default_keywords: list[str],
+    override_items: list[dict[str, Any]] | None = None,
+) -> dict[str, int]:
+    weighted_keywords = {keyword.lower(): 1 for keyword in default_keywords}
+
+    for item in override_items or []:
+        keyword = str(item.get("keyword", "")).strip().lower()
+        if not keyword:
+            continue
+
+        try:
+            weight = max(int(item.get("weight", 1)), 1)
+        except (TypeError, ValueError):
+            weight = 1
+
+        weighted_keywords[keyword] = max(weighted_keywords.get(keyword, 0), weight)
+
+    return weighted_keywords
+
+
+def _apply_local_intent_bonus(
+    intent: ConversationIntent,
+    lowered_message: str,
+) -> tuple[int, list[str]]:
+    bonus_score = 0
+    bonus_matches: list[str] = []
+
+    if intent == ConversationIntent.TIME_OFF_BALANCE:
+        if "cuti" in lowered_message and any(
+            token in lowered_message for token in ["sisa", "saldo", "jatah"]
+        ):
+            bonus_score += 3
+            bonus_matches.append("time_off_balance_signal")
+
+    if intent == ConversationIntent.TIME_OFF_REQUEST_STATUS:
+        if "cuti" in lowered_message and any(
+            token in lowered_message for token in ["status", "pengajuan", "request"]
+        ):
+            bonus_score += 3
+            bonus_matches.append("time_off_request_signal")
+
+    if intent == ConversationIntent.PAYROLL_DOCUMENT_REQUEST:
+        if any(token in lowered_message for token in ["slip", "payslip", "pay slip"]):
+            bonus_score += 3
+            bonus_matches.append("payroll_document_signal")
+
+    if intent == ConversationIntent.PAYROLL_INFO:
+        if any(token in lowered_message for token in ["gaji", "salary", "payroll"]):
+            bonus_score += 2
+            bonus_matches.append("payroll_info_signal")
+
+    if intent == ConversationIntent.ATTENDANCE_REVIEW:
+        if any(
+            token in lowered_message
+            for token in [
+                "jam masuk",
+                "masuk kantor",
+                "check in",
+                "check-in",
+                "kehadiran",
+                "attendance",
+            ]
+        ):
+            bonus_score += 3
+            bonus_matches.append("attendance_review_signal")
+
+    if intent == ConversationIntent.COMPANY_POLICY:
+        if any(token in lowered_message for token in ["aturan", "kebijakan", "policy"]):
+            bonus_score += 2
+            bonus_matches.append("company_policy_signal")
+
+    return bonus_score, bonus_matches
+
+
+async def _load_classifier_overrides(
+    db: AsyncSession,
+    company_id: str,
+) -> dict[str, dict[str, list[dict[str, Any]]]]:
+    cache = get_cache("classifier_config")
+    cache_key = f"classifier:{company_id}"
+    cached = cache.get(cache_key)
+    if isinstance(cached, dict):
+        return cached
+
+    try:
+        result = await db.execute(
+            text(
+                """
+                SELECT
+                    classifier_type,
+                    target_key,
+                    keyword,
+                    weight
+                FROM classifier_keyword_overrides
+                WHERE company_id = CAST(:company_id AS uuid)
+                  AND is_active = true
+                ORDER BY classifier_type ASC, target_key ASC, weight DESC, keyword ASC
+                """
+            ),
+            {"company_id": company_id},
+        )
+    except Exception:
+        empty_overrides = {"intent": {}, "sensitivity": {}}
+        cache.set(cache_key, empty_overrides, ttl_seconds=60)
+        return empty_overrides
+
+    overrides: dict[str, dict[str, list[dict[str, Any]]]] = {
+        "intent": {},
+        "sensitivity": {},
+    }
+    for row in result.mappings().all():
+        data = dict(row)
+        classifier_type = str(data.get("classifier_type", "")).strip().lower()
+        target_key = str(data.get("target_key", "")).strip()
+        if classifier_type not in {"intent", "sensitivity"} or not target_key:
+            continue
+
+        overrides[classifier_type].setdefault(target_key, []).append(
+            {
+                "keyword": data.get("keyword"),
+                "weight": data.get("weight", 1),
+            }
+        )
+
+    cache.set(cache_key, overrides)
+    return overrides
+
+
+def _count_classifier_overrides(
+    overrides: dict[str, dict[str, list[dict[str, Any]]]],
+) -> int:
+    return sum(
+        len(items)
+        for classifier_map in overrides.values()
+        for items in classifier_map.values()
+    )
+
+
+def classify_intent(
+    message: str,
+    classifier_overrides: dict[str, dict[str, list[dict[str, Any]]]] | None = None,
+) -> IntentAssessment:
+    lowered = _normalize_message(message)
+    scored: list[tuple[int, ConversationIntent, list[str]]] = []
+    intent_override_map = (
+        classifier_overrides.get("intent", {}) if classifier_overrides else {}
+    )
+
+    for intent, keywords in INTENT_KEYWORDS.items():
+        keyword_weights = _build_weighted_keywords(
+            keywords,
+            intent_override_map.get(intent.value, []),
+        )
+        matched: list[str] = []
+        score = 0
+
+        for keyword, weight in keyword_weights.items():
+            if keyword in lowered:
+                matched.append(keyword)
+                score += weight
+
+        bonus_score, bonus_matches = _apply_local_intent_bonus(intent, lowered)
+        score += bonus_score
+        matched.extend(bonus_matches)
+
+        if score > 0:
+            scored.append((score, intent, matched))
+
+    scored.sort(key=lambda item: item[0], reverse=True)
+
+    if not scored:
+        generic_hr_keywords = ["hr", "payroll", "cuti", "attendance", "policy", "kebijakan"]
+        if any(keyword in lowered for keyword in generic_hr_keywords):
+            return IntentAssessment(
+                primary_intent=ConversationIntent.GENERAL_HR_SUPPORT,
+                secondary_intents=[],
+                confidence=0.35,
+                matched_keywords=[keyword for keyword in generic_hr_keywords if keyword in lowered],
+            )
+        return IntentAssessment(
+            primary_intent=ConversationIntent.OUT_OF_SCOPE,
+            secondary_intents=[],
+            confidence=0.2,
+            matched_keywords=[],
+        )
+
+    primary_score, primary_intent, matched_keywords = scored[0]
+    secondary_intents = [
+        intent
+        for score, intent, _ in scored[1:3]
+        if (
+            score > 0
+            and intent != primary_intent
+            and score >= max(2, primary_score - 1)
+        )
+    ]
+    confidence = min(0.45 + (primary_score * 0.1), 0.97)
+    has_signal_match = any(keyword.endswith("_signal") for keyword in matched_keywords)
+    if len(set(matched_keywords)) >= 2:
+        confidence = min(confidence + 0.08, 0.97)
+    if not secondary_intents and primary_score >= 4:
+        confidence = max(confidence, 0.82)
+    if not secondary_intents and has_signal_match:
+        confidence = max(confidence, 0.82)
+
+    return IntentAssessment(
+        primary_intent=primary_intent,
+        secondary_intents=secondary_intents,
+        confidence=confidence,
+        matched_keywords=sorted(set(matched_keywords)),
+    )
+
+
+def assess_sensitivity(
+    message: str,
+    classifier_overrides: dict[str, dict[str, list[dict[str, Any]]]] | None = None,
+) -> SensitivityAssessment:
+    lowered = _normalize_message(message)
+    sensitivity_override_map = (
+        classifier_overrides.get("sensitivity", {}) if classifier_overrides else {}
+    )
+
+    high_keywords = _build_weighted_keywords(
+        DEFAULT_SENSITIVITY_KEYWORDS[SensitivityLevel.HIGH],
+        sensitivity_override_map.get(SensitivityLevel.HIGH.value, []),
+    )
+    medium_keywords = _build_weighted_keywords(
+        DEFAULT_SENSITIVITY_KEYWORDS[SensitivityLevel.MEDIUM],
+        sensitivity_override_map.get(SensitivityLevel.MEDIUM.value, []),
+    )
+
+    high_matches = [keyword for keyword in high_keywords if keyword in lowered]
+    if high_matches:
+        return SensitivityAssessment(
+            level=SensitivityLevel.HIGH,
+            matched_keywords=sorted(set(high_matches)),
+            rationale=(
+                "Pesan mengandung sinyal risiko tinggi yang perlu diarahkan ke "
+                "penanganan HR/manual review."
+            ),
+        )
+
+    medium_matches = [keyword for keyword in medium_keywords if keyword in lowered]
+    if medium_matches:
+        return SensitivityAssessment(
+            level=SensitivityLevel.MEDIUM,
+            matched_keywords=sorted(set(medium_matches)),
+            rationale=(
+                "Pesan mengandung topik sensitif yang sebaiknya tidak ditangani "
+                "sepenuhnya oleh jalur otomatis."
+            ),
+        )
+
+    return SensitivityAssessment(
+        level=SensitivityLevel.LOW,
+        matched_keywords=[],
+        rationale="Pesan tidak menunjukkan indikator sensitif yang kuat.",
+    )
+
+
+def _resolve_route(intent: IntentAssessment) -> AgentRoute:
+    intents = {intent.primary_intent, *intent.secondary_intents}
+    needs_hr_data = any(item in HR_DATA_INTENTS for item in intents)
+    needs_company = any(item in COMPANY_INTENTS for item in intents)
+
+    if intent.primary_intent == ConversationIntent.OUT_OF_SCOPE:
+        return AgentRoute.OUT_OF_SCOPE
+    if intent.primary_intent == ConversationIntent.GENERAL_HR_SUPPORT:
+        return AgentRoute.OUT_OF_SCOPE
+    if needs_hr_data and needs_company:
+        return AgentRoute.MIXED
+    if needs_hr_data:
+        return AgentRoute.HR_DATA
+    if needs_company:
+        return AgentRoute.COMPANY
+    return AgentRoute.OUT_OF_SCOPE
+
+
+def _build_sensitive_response(sensitivity: SensitivityAssessment) -> str:
+    matched = ", ".join(sensitivity.matched_keywords) if sensitivity.matched_keywords else "topik sensitif"
+    return (
+        "Topik ini masuk jalur sensitif. Aku tidak akan menyimpulkan atau "
+        "mengotomasi penanganannya. Mohon teruskan ke HR/Admin yang berwenang "
+        f"untuk review manual. Indikator yang terdeteksi: {matched}."
+    )
+
+
+def _build_out_of_scope_response(intent: IntentAssessment) -> str:
+    if intent.primary_intent == ConversationIntent.GENERAL_HR_SUPPORT:
+        return (
+            "Aku bisa bantu kalau pertanyaannya dibuat lebih spesifik, misalnya "
+            "tentang payroll, attendance, cuti, policy perusahaan, atau struktur perusahaan."
+        )
+    return (
+        "Pesan ini belum cukup jelas atau belum masuk domain HR.ai. Coba arahkan "
+        "ke payroll, attendance, time off, policy perusahaan, atau struktur perusahaan."
+    )
+
+
+def _synthesize_answer(
+    route: AgentRoute,
+    hr_summary: str | None,
+    company_summary: str | None,
+    file_summary: str | None,
+) -> str:
+    parts: list[str] = []
+
+    if route == AgentRoute.HR_DATA and hr_summary:
+        parts.append(hr_summary)
+    elif route == AgentRoute.COMPANY and company_summary:
+        parts.append(company_summary)
+    elif route == AgentRoute.MIXED:
+        if hr_summary:
+            parts.append(f"Data personal: {hr_summary}")
+        if company_summary:
+            parts.append(f"Referensi perusahaan: {company_summary}")
+
+    if file_summary:
+        parts.append(f"Lampiran: {file_summary}")
+
+    return " ".join(part for part in parts if part).strip()
+
+
+def _build_hr_trace_detail(summary: str) -> str:
+    return summary.strip()
+
+
+def _build_company_trace_detail(company_result) -> str:
+    matched_rules = company_result.records.get("matched_rules", [])
+    if matched_rules:
+        parts: list[str] = []
+        for rule in matched_rules:
+            title = rule.get("title") or "Untitled rule"
+            category = rule.get("category") or "-"
+            effective_date = rule.get("effective_date") or "-"
+            content = (
+                rule.get("content")
+                or rule.get("matched_chunk")
+                or company_result.summary
+            )
+            parts.append(
+                f"{title} ({category}, efektif {effective_date}): "
+                f"{content}"
+            )
+        return " ".join(parts).strip()
+    return company_result.summary.strip()
+
+
+def _build_semantic_trace_detail(semantic_result: SemanticIntentResult) -> str:
+    if not semantic_result.candidates:
+        return (
+            semantic_result.fallback_reason
+            or "No semantic intent candidates matched the current message."
+        )
+
+    candidate_text = ", ".join(
+        (
+            f"{candidate.intent.value}"
+            f"({candidate.similarity:.2f}, {candidate.source})"
+        )
+        for candidate in semantic_result.candidates[:4]
+    )
+    if semantic_result.fallback_reason:
+        return (
+            f"Top semantic candidates: {candidate_text}. "
+            f"{semantic_result.fallback_reason}"
+        )
+    return f"Top semantic candidates: {candidate_text}."
+
+
+def _build_semantic_intent_assessment(
+    semantic_result: SemanticIntentResult,
+) -> IntentAssessment | None:
+    top_candidate = semantic_result.top_candidate
+    if top_candidate is None:
+        return None
+
+    direct_threshold = SEMANTIC_DIRECT_FALLBACK_THRESHOLD.get(
+        semantic_result.retrieval_mode,
+        0.72,
+    )
+    if top_candidate.similarity < direct_threshold:
+        return None
+
+    primary_intent = top_candidate.intent
+    secondary_intents: list[ConversationIntent] = []
+    for candidate in semantic_result.candidates[1:4]:
+        if candidate.intent == primary_intent:
+            continue
+        if candidate.similarity >= max(direct_threshold - 0.1, top_candidate.similarity - 0.12):
+            secondary_intents.append(candidate.intent)
+
+    confidence = min(
+        max(
+            top_candidate.similarity
+            + (0.08 if semantic_result.retrieval_mode == "vector" else 0.04),
+            0.68,
+        ),
+        0.94,
+    )
+
+    return IntentAssessment(
+        primary_intent=primary_intent,
+        secondary_intents=secondary_intents[:2],
+        confidence=confidence,
+        matched_keywords=[
+            f"semantic:{candidate.intent.value}"
+            for candidate in semantic_result.candidates[:3]
+        ],
+    )
+
+
+def _build_agent_capability_trace_detail(
+    agent_result: AgentCapabilityResult,
+) -> str:
+    if not agent_result.candidates:
+        return (
+            agent_result.fallback_reason
+            or "No agent capability candidate matched the current message."
+        )
+
+    candidate_text = ", ".join(
+        (
+            f"{candidate.agent_key}"
+            f"({candidate.similarity:.2f}, {candidate.source})"
+        )
+        for candidate in agent_result.candidates[:4]
+    )
+    if agent_result.fallback_reason:
+        return (
+            f"Top agent capability candidates: {candidate_text}. "
+            f"{agent_result.fallback_reason}"
+        )
+    return f"Top agent capability candidates: {candidate_text}."
+
+
+def _sanitize_agent_keys(
+    agent_keys: list[str] | None,
+    *,
+    has_attachments: bool,
+) -> list[str]:
+    sanitized: list[str] = []
+    for agent_key in agent_keys or []:
+        if agent_key not in KNOWN_AGENT_KEYS:
+            continue
+        if agent_key == "file-agent" and not has_attachments:
+            continue
+        if agent_key not in sanitized:
+            sanitized.append(agent_key)
+    return sanitized
+
+
+def _route_to_agent_keys(route: AgentRoute) -> list[str]:
+    if route == AgentRoute.HR_DATA:
+        return ["hr-data-agent"]
+    if route == AgentRoute.COMPANY:
+        return ["company-agent"]
+    if route == AgentRoute.MIXED:
+        return ["hr-data-agent", "company-agent"]
+    return []
+
+
+def _resolve_route_from_agent_keys(agent_keys: list[str]) -> AgentRoute:
+    normalized = set(agent_keys)
+    needs_hr = "hr-data-agent" in normalized
+    needs_company = "company-agent" in normalized
+    if needs_hr and needs_company:
+        return AgentRoute.MIXED
+    if needs_hr:
+        return AgentRoute.HR_DATA
+    if needs_company:
+        return AgentRoute.COMPANY
+    return AgentRoute.OUT_OF_SCOPE
+
+
+def _intent_matches_route(intent: ConversationIntent, route: AgentRoute) -> bool:
+    if route == AgentRoute.HR_DATA:
+        return intent in HR_DATA_INTENTS
+    if route == AgentRoute.COMPANY:
+        return intent in COMPANY_INTENTS
+    if route == AgentRoute.MIXED:
+        return intent in HR_DATA_INTENTS or intent in COMPANY_INTENTS
+    if route == AgentRoute.OUT_OF_SCOPE:
+        return intent in {
+            ConversationIntent.OUT_OF_SCOPE,
+            ConversationIntent.GENERAL_HR_SUPPORT,
+        }
+    return False
+
+
+def _infer_agents_from_capabilities(
+    agent_result: AgentCapabilityResult,
+    *,
+    has_attachments: bool,
+) -> list[str]:
+    threshold = AGENT_CAPABILITY_ROUTE_THRESHOLD.get(agent_result.retrieval_mode, 0.58)
+    inferred = [
+        candidate.agent_key
+        for candidate in agent_result.candidates
+        if candidate.similarity >= threshold
+    ]
+    return _sanitize_agent_keys(inferred, has_attachments=has_attachments)
+
+
+def _build_agent_execution_plan(
+    *,
+    route: AgentRoute,
+    intent: IntentAssessment,
+    has_attachments: bool,
+    agent_result: AgentCapabilityResult,
+    provider_chosen_agents: list[str] | None = None,
+) -> tuple[AgentRoute, list[str], str]:
+    provider_agents = _sanitize_agent_keys(
+        provider_chosen_agents,
+        has_attachments=has_attachments,
+    )
+    capability_agents = _infer_agents_from_capabilities(
+        agent_result,
+        has_attachments=has_attachments,
+    )
+    route_agents = _route_to_agent_keys(route)
+
+    if provider_agents:
+        provider_route = _resolve_route_from_agent_keys(
+            [agent for agent in provider_agents if agent != "file-agent"]
+        )
+        if (
+            route in {AgentRoute.OUT_OF_SCOPE, AgentRoute.COMPANY, AgentRoute.HR_DATA}
+            and provider_route == AgentRoute.MIXED
+        ):
+            return AgentRoute.MIXED, ["hr-data-agent", "company-agent"], (
+                "Provider selected both hr-data-agent and company-agent."
+            )
+        if route == AgentRoute.OUT_OF_SCOPE and provider_route != AgentRoute.OUT_OF_SCOPE:
+            return provider_route, _route_to_agent_keys(provider_route), (
+                "Provider-selected agents promoted the route from out_of_scope."
+            )
+
+    capability_route = _resolve_route_from_agent_keys(
+        [agent for agent in capability_agents if agent != "file-agent"]
+    )
+    if route == AgentRoute.OUT_OF_SCOPE and capability_route != AgentRoute.OUT_OF_SCOPE:
+        return capability_route, _route_to_agent_keys(capability_route), (
+            "Semantic agent capabilities promoted the route from out_of_scope."
+        )
+
+    if (
+        route == AgentRoute.HR_DATA
+        and any(item in COMPANY_INTENTS for item in intent.secondary_intents)
+        and "company-agent" in capability_agents
+    ):
+        return AgentRoute.MIXED, ["hr-data-agent", "company-agent"], (
+            "Secondary company intent plus semantic capability suggested a mixed route."
+        )
+
+    if (
+        route == AgentRoute.COMPANY
+        and any(item in HR_DATA_INTENTS for item in intent.secondary_intents)
+        and "hr-data-agent" in capability_agents
+    ):
+        return AgentRoute.MIXED, ["hr-data-agent", "company-agent"], (
+            "Secondary HR intent plus semantic capability suggested a mixed route."
+        )
+
+    return route, route_agents, "Route stayed on intent-based mapping."
+
+
+def _align_intent_with_route(
+    intent: IntentAssessment,
+    route: AgentRoute,
+    semantic_result: SemanticIntentResult,
+) -> tuple[IntentAssessment, AgentRoute, str | None]:
+    if route in {AgentRoute.OUT_OF_SCOPE, AgentRoute.SENSITIVE_REDIRECT}:
+        return intent, route, None
+
+    if _intent_matches_route(intent.primary_intent, route):
+        return intent, route, None
+
+    aligned_candidates = [
+        candidate
+        for candidate in semantic_result.candidates
+        if _intent_matches_route(candidate.intent, route)
+    ]
+    if aligned_candidates:
+        primary_candidate = aligned_candidates[0]
+        secondary_intents = [
+            candidate.intent
+            for candidate in aligned_candidates[1:4]
+            if candidate.intent != primary_candidate.intent
+        ]
+        promoted_intent = IntentAssessment(
+            primary_intent=primary_candidate.intent,
+            secondary_intents=secondary_intents[:2],
+            confidence=min(
+                max(
+                    intent.confidence,
+                    primary_candidate.similarity
+                    + (0.08 if semantic_result.retrieval_mode == "vector" else 0.04),
+                ),
+                0.94,
+            ),
+            matched_keywords=sorted(
+                set(
+                    intent.matched_keywords
+                    + [
+                        f"semantic:{candidate.intent.value}"
+                        for candidate in aligned_candidates[:3]
+                    ]
+                )
+            ),
+        )
+        return (
+            promoted_intent,
+            route,
+            (
+                "Intent was aligned with the planned route using semantic intent "
+                f"candidate {primary_candidate.intent.value}."
+            ),
+        )
+
+    if route == AgentRoute.COMPANY:
+        promoted_intent = IntentAssessment(
+            primary_intent=ConversationIntent.COMPANY_POLICY,
+            secondary_intents=[],
+            confidence=max(intent.confidence, 0.62),
+            matched_keywords=sorted(
+                set(intent.matched_keywords + ["agent_capability:company-agent"])
+            ),
+        )
+        return (
+            promoted_intent,
+            route,
+            (
+                "Intent defaulted to company_policy because agent capability "
+                "routing promoted the request into the company domain."
+            ),
+        )
+
+    return (
+        intent,
+        AgentRoute.OUT_OF_SCOPE,
+        (
+            "Capability-based route promotion was discarded because no aligned "
+            "semantic intent candidate was available."
+        ),
+    )
+
+
+def _should_refine_with_attachment_preview(
+    intent: IntentAssessment,
+    extracted_attachment_text: str | None,
+) -> bool:
+    return (
+        bool(extracted_attachment_text)
+        and (
+            intent.primary_intent
+            in {ConversationIntent.GENERAL_HR_SUPPORT, ConversationIntent.OUT_OF_SCOPE}
+            or intent.confidence < LOCAL_CLASSIFIER_CONFIDENCE_THRESHOLD
+        )
+    )
+
+
+def _should_use_provider_classifier(
+    intent: IntentAssessment,
+    sensitivity: SensitivityAssessment,
+    *,
+    used_attachment_preview: bool,
+    semantic_result: SemanticIntentResult,
+) -> tuple[bool, str]:
+    if sensitivity.level != SensitivityLevel.LOW and sensitivity.matched_keywords:
+        return (
+            False,
+            "Skipped because local sensitivity keywords were already explicit.",
+        )
+
+    semantic_top = semantic_result.top_candidate
+    semantic_threshold = SEMANTIC_PROVIDER_HINT_THRESHOLD.get(
+        semantic_result.retrieval_mode,
+        0.52,
+    )
+    if (
+        semantic_top is not None
+        and semantic_top.similarity >= semantic_threshold
+        and (
+            intent.primary_intent
+            in {ConversationIntent.GENERAL_HR_SUPPORT, ConversationIntent.OUT_OF_SCOPE}
+            or intent.confidence < LOCAL_CLASSIFIER_CONFIDENCE_THRESHOLD
+            or (
+                semantic_top.intent != intent.primary_intent
+                and intent.confidence < 0.92
+            )
+        )
+    ):
+        return (
+            True,
+            (
+                "Semantic routing found a strong candidate intent "
+                f"({semantic_top.intent.value}, similarity={semantic_top.similarity:.2f})."
+            ),
+        )
+
+    if (
+        intent.primary_intent
+        not in {ConversationIntent.GENERAL_HR_SUPPORT, ConversationIntent.OUT_OF_SCOPE}
+        and intent.confidence >= LOCAL_CLASSIFIER_CONFIDENCE_THRESHOLD
+        and len(intent.secondary_intents) <= 1
+    ):
+        return (
+            False,
+            (
+                "Skipped because local classifier was already confident "
+                f"(confidence={intent.confidence:.2f})."
+            ),
+        )
+
+    if intent.primary_intent in {
+        ConversationIntent.GENERAL_HR_SUPPORT,
+        ConversationIntent.OUT_OF_SCOPE,
+    }:
+        return (
+            True,
+            "Local classifier still sees the request as generic or ambiguous.",
+        )
+
+    if len(intent.secondary_intents) >= 2:
+        return True, "Multiple competing intents were detected locally."
+
+    if intent.confidence < LOCAL_CLASSIFIER_CONFIDENCE_THRESHOLD:
+        return (
+            True,
+            (
+                "Local classifier confidence is below the escalation threshold "
+                f"({intent.confidence:.2f})."
+            ),
+        )
+
+    if used_attachment_preview:
+        return True, "Attachment context changed the local interpretation, so provider confirmation is helpful."
+
+    return False, "Skipped because local classifier result was sufficient."
+
+
+def _record_duration(timings_ms: dict[str, int], key: str, started_at: float) -> None:
+    timings_ms[key] = round((perf_counter() - started_at) * 1000)
+
+
+def _apply_orchestration_metrics(
+    context: dict[str, Any],
+    *,
+    classifier_source: str,
+    provider_status: str,
+    provider_reason: str,
+    used_attachment_preview: bool,
+    classifier_override_count: int,
+    semantic_retrieval_mode: str,
+    semantic_candidate_count: int,
+    semantic_fallback_used: bool,
+    agent_capability_retrieval_mode: str,
+    agent_capability_candidate_count: int,
+    capability_route_promotion_used: bool,
+    timings_ms: dict[str, int],
+) -> None:
+    context["metrics"] = {
+        "classifier_source": classifier_source,
+        "provider_status": provider_status,
+        "provider_reason": provider_reason,
+        "used_attachment_preview": used_attachment_preview,
+        "classifier_override_count": classifier_override_count,
+        "semantic_retrieval_mode": semantic_retrieval_mode,
+        "semantic_candidate_count": semantic_candidate_count,
+        "semantic_fallback_used": semantic_fallback_used,
+        "agent_capability_retrieval_mode": agent_capability_retrieval_mode,
+        "agent_capability_candidate_count": agent_capability_candidate_count,
+        "capability_route_promotion_used": capability_route_promotion_used,
+        "latency_ms": timings_ms,
+    }
+
+
+async def _run_hr_data_agent_isolated(
+    session: SessionContext,
+    message: str,
+    primary_intent: ConversationIntent,
+    secondary_intents: list[ConversationIntent],
+):
+    async with AsyncSessionLocal() as isolated_db:
+        return await run_hr_data_agent(
+            isolated_db,
+            session,
+            message,
+            primary_intent,
+            secondary_intents,
+        )
+
+
+async def _run_company_agent_isolated(
+    session: SessionContext,
+    message: str,
+):
+    async with AsyncSessionLocal() as isolated_db:
+        return await run_company_agent(isolated_db, session, message)
+
+
+async def orchestrate_message(
+    db: AsyncSession,
+    session: SessionContext,
+    payload: OrchestratorRequest,
+) -> OrchestratorResponse:
+    trace: list[AgentTraceStep] = []
+    used_agents: list[str] = []
+    evidence = []
+    context: dict[str, Any] = {}
+    timings_ms: dict[str, int] = {}
+    working_message = payload.message.strip()
+    attachment_names = [attachment.resolved_name for attachment in payload.attachments]
+    extracted_attachment_text: str | None = None
+    file_summary: str | None = None
+    used_attachment_preview = False
+
+    if payload.attachments:
+        file_started_at = perf_counter()
+        file_result = await run_file_agent(payload.attachments)
+        _record_duration(timings_ms, "file_agent", file_started_at)
+        used_agents.append("file-agent")
+        trace.append(
+            AgentTraceStep(
+                agent="file-agent",
+                status="used",
+                detail=file_result.summary,
+            )
+        )
+        context["file"] = file_result.attachments
+        evidence.extend(file_result.evidence)
+        file_summary = file_result.summary
+        extracted_attachment_text = file_result.extracted_text
+        if extracted_attachment_text:
+            working_message = f"{working_message}\n\nAttachment context:\n{extracted_attachment_text}"
+    else:
+        trace.append(
+            AgentTraceStep(
+                agent="file-agent",
+                status="skipped",
+                detail="No attachment was supplied in this request.",
+            )
+        )
+
+    classifier_overrides_started_at = perf_counter()
+    classifier_overrides = await _load_classifier_overrides(db, session.company_id)
+    _record_duration(timings_ms, "classifier_config", classifier_overrides_started_at)
+    classifier_override_count = _count_classifier_overrides(classifier_overrides)
+
+    semantic_started_at = perf_counter()
+    semantic_result = await retrieve_intent_candidates(
+        db,
+        session.company_id,
+        payload.message,
+    )
+    _record_duration(timings_ms, "semantic_intent_retrieval", semantic_started_at)
+    semantic_fallback_intent = _build_semantic_intent_assessment(semantic_result)
+    semantic_fallback_used = False
+    context["semantic_routing"] = semantic_result.as_dict()
+    trace.append(
+        AgentTraceStep(
+            agent="semantic-intent-retriever",
+            status="used" if semantic_result.candidates else "skipped",
+            detail=_build_semantic_trace_detail(semantic_result),
+        )
+    )
+    agent_capability_started_at = perf_counter()
+    agent_capability_result = await retrieve_agent_capabilities(
+        db,
+        session.company_id,
+        payload.message,
+    )
+    _record_duration(timings_ms, "agent_capability_retrieval", agent_capability_started_at)
+    capability_route_promotion_used = False
+    context["agent_capabilities"] = agent_capability_result.as_dict()
+    trace.append(
+        AgentTraceStep(
+            agent="semantic-agent-retriever",
+            status="used" if agent_capability_result.candidates else "skipped",
+            detail=_build_agent_capability_trace_detail(agent_capability_result),
+        )
+    )
+
+    classification_message = _build_classification_message(
+        payload.message,
+        attachment_names=attachment_names,
+    )
+    intent = classify_intent(classification_message, classifier_overrides)
+    sensitivity = assess_sensitivity(classification_message, classifier_overrides)
+    provider_input_message = classification_message
+
+    if _should_refine_with_attachment_preview(intent, extracted_attachment_text):
+        used_attachment_preview = True
+        provider_input_message = _build_classification_message(
+            payload.message,
+            attachment_names=attachment_names,
+            attachment_preview=extracted_attachment_text,
+        )
+        intent = classify_intent(provider_input_message, classifier_overrides)
+        sensitivity = assess_sensitivity(provider_input_message, classifier_overrides)
+        trace.append(
+            AgentTraceStep(
+                agent="orchestrator",
+                status="used",
+                detail=(
+                    "Attachment preview was folded into local classification "
+                    "because the initial message was too generic or low-confidence."
+                ),
+            )
+        )
+
+    classifier_source = "local"
+    provider_status = "skipped"
+    provider_reason = "Local classifier result was used directly."
+    provider_chosen_agents: list[str] = []
+    should_use_provider, provider_decision_reason = _should_use_provider_classifier(
+        intent,
+        sensitivity,
+        used_attachment_preview=used_attachment_preview,
+        semantic_result=semantic_result,
+    )
+
+    if should_use_provider:
+        classifier_started_at = perf_counter()
+        provider_assessment = await classify_with_minimax(
+            provider_input_message,
+            candidate_intents=[
+                candidate.as_dict() for candidate in semantic_result.candidates
+            ],
+            candidate_agents=[
+                candidate.as_dict() for candidate in agent_capability_result.candidates
+            ],
+            local_assessment=intent,
+        )
+        _record_duration(timings_ms, "minimax_classifier", classifier_started_at)
+
+        if (
+            isinstance(provider_assessment, ProviderClassificationResult)
+            and provider_assessment.is_success
+        ):
+            intent = provider_assessment.intent  # type: ignore[assignment]
+            sensitivity = provider_assessment.sensitivity  # type: ignore[assignment]
+            classifier_source = "minimax"
+            provider_status = "used"
+            provider_reason = "MiniMax classification replaced the local result."
+            provider_chosen_agents = _sanitize_agent_keys(
+                provider_assessment.chosen_agents,
+                has_attachments=bool(payload.attachments),
+            )
+            used_agents.append("minimax-classifier")
+            trace.append(
+                AgentTraceStep(
+                    agent="minimax-classifier",
+                    status="used",
+                    detail=(
+                        f"Provider intent={intent.primary_intent.value}, "
+                        f"sensitivity={sensitivity.level.value}, "
+                        f"confidence={intent.confidence:.2f}, "
+                        f"chosen_agents={provider_chosen_agents or ['none']}"
+                    ),
+                )
+            )
+        else:
+            provider_status = "fallback"
+            fallback_reason = (
+                provider_assessment.fallback_reason
+                if isinstance(provider_assessment, ProviderClassificationResult)
+                else "MiniMax provider returned no usable classification result."
+            )
+            provider_reason = fallback_reason
+            trace.append(
+                AgentTraceStep(
+                    agent="minimax-classifier",
+                    status="fallback",
+                    detail=fallback_reason,
+                )
+            )
+            if semantic_fallback_intent is not None:
+                intent = semantic_fallback_intent
+                classifier_source = "semantic_retrieval"
+                semantic_fallback_used = True
+                if (
+                    intent.primary_intent
+                    == ConversationIntent.EMPLOYEE_WELLBEING_CONCERN
+                    and sensitivity.level == SensitivityLevel.LOW
+                ):
+                    sensitivity = SensitivityAssessment(
+                        level=SensitivityLevel.MEDIUM,
+                        matched_keywords=["semantic:employee_wellbeing_concern"],
+                        rationale=(
+                            "Semantic routing indicates a wellbeing-related topic "
+                            "that should be handled cautiously."
+                        ),
+                    )
+                provider_reason = (
+                    f"{fallback_reason} Semantic routing fallback promoted "
+                    f"{intent.primary_intent.value}."
+                )
+                trace.append(
+                    AgentTraceStep(
+                        agent="orchestrator",
+                        status="used",
+                        detail=(
+                            "Semantic routing fallback was applied after MiniMax "
+                            f"was unavailable. intent={intent.primary_intent.value}, "
+                            f"confidence={intent.confidence:.2f}"
+                        ),
+                    )
+                )
+    else:
+        provider_reason = provider_decision_reason
+        trace.append(
+            AgentTraceStep(
+                agent="minimax-classifier",
+                status="skipped",
+                detail=provider_decision_reason,
+            )
+        )
+
+    trace.append(
+        AgentTraceStep(
+            agent="orchestrator",
+            status="used",
+            detail=(
+                f"Intent={intent.primary_intent.value}, "
+                f"sensitivity={sensitivity.level.value}, "
+                f"confidence={intent.confidence:.2f}, "
+                f"classifier_source={classifier_source}"
+            ),
+        )
+    )
+
+    _apply_orchestration_metrics(
+        context,
+        classifier_source=classifier_source,
+        provider_status=provider_status,
+        provider_reason=provider_reason,
+        used_attachment_preview=used_attachment_preview,
+        classifier_override_count=classifier_override_count,
+        semantic_retrieval_mode=semantic_result.retrieval_mode,
+        semantic_candidate_count=len(semantic_result.candidates),
+        semantic_fallback_used=semantic_fallback_used,
+        agent_capability_retrieval_mode=agent_capability_result.retrieval_mode,
+        agent_capability_candidate_count=len(agent_capability_result.candidates),
+        capability_route_promotion_used=capability_route_promotion_used,
+        timings_ms=timings_ms,
+    )
+
+    if sensitivity.level != SensitivityLevel.LOW:
+        return OrchestratorResponse(
+            route=AgentRoute.SENSITIVE_REDIRECT,
+            intent=intent,
+            sensitivity=sensitivity,
+            answer=_build_sensitive_response(sensitivity),
+            used_agents=used_agents,
+            evidence=evidence,
+            trace=trace,
+            extracted_attachment_text=extracted_attachment_text,
+            context=context,
+        )
+
+    initial_route = _resolve_route(intent)
+    route = initial_route
+    route, planned_agent_keys, agent_plan_reason = _build_agent_execution_plan(
+        route=route,
+        intent=intent,
+        has_attachments=bool(payload.attachments),
+        agent_result=agent_capability_result,
+        provider_chosen_agents=provider_chosen_agents,
+    )
+    intent, route, intent_alignment_reason = _align_intent_with_route(
+        intent,
+        route,
+        semantic_result,
+    )
+    if route == AgentRoute.OUT_OF_SCOPE:
+        planned_agent_keys = []
+    else:
+        planned_agent_keys = _route_to_agent_keys(route)
+    capability_route_promotion_used = (
+        initial_route != route
+        and route != AgentRoute.OUT_OF_SCOPE
+    )
+    context["agent_routing"] = {
+        "planned_agents": planned_agent_keys,
+        "provider_chosen_agents": provider_chosen_agents,
+        "semantic_candidate_agents": [
+            candidate.agent_key for candidate in agent_capability_result.candidates
+        ],
+        "planning_reason": agent_plan_reason,
+    }
+    if intent_alignment_reason:
+        context["agent_routing"]["intent_alignment_reason"] = intent_alignment_reason
+        trace.append(
+            AgentTraceStep(
+                agent="orchestrator",
+                status="used",
+                detail=intent_alignment_reason,
+            )
+        )
+    trace.append(
+        AgentTraceStep(
+            agent="orchestrator",
+            status="used",
+            detail=(
+                f"Planned agents={planned_agent_keys or ['none']}, "
+                f"route={route.value}, "
+                f"reason={agent_plan_reason}"
+            ),
+        )
+    )
+
+    _apply_orchestration_metrics(
+        context,
+        classifier_source=classifier_source,
+        provider_status=provider_status,
+        provider_reason=provider_reason,
+        used_attachment_preview=used_attachment_preview,
+        classifier_override_count=classifier_override_count,
+        semantic_retrieval_mode=semantic_result.retrieval_mode,
+        semantic_candidate_count=len(semantic_result.candidates),
+        semantic_fallback_used=semantic_fallback_used,
+        agent_capability_retrieval_mode=agent_capability_result.retrieval_mode,
+        agent_capability_candidate_count=len(agent_capability_result.candidates),
+        capability_route_promotion_used=capability_route_promotion_used,
+        timings_ms=timings_ms,
+    )
+
+    if route == AgentRoute.OUT_OF_SCOPE:
+        return OrchestratorResponse(
+            route=route,
+            intent=intent,
+            sensitivity=sensitivity,
+            answer=_build_out_of_scope_response(intent),
+            used_agents=used_agents,
+            evidence=evidence,
+            trace=trace,
+            extracted_attachment_text=extracted_attachment_text,
+            context=context,
+        )
+
+    hr_result = None
+    company_result = None
+
+    if route == AgentRoute.MIXED and isinstance(db, AsyncSession):
+        mixed_started_at = perf_counter()
+        hr_result, company_result = await asyncio.gather(
+            _run_hr_data_agent_isolated(
+                session,
+                working_message,
+                intent.primary_intent,
+                intent.secondary_intents,
+            ),
+            _run_company_agent_isolated(session, working_message),
+        )
+        _record_duration(timings_ms, "mixed_agents_parallel", mixed_started_at)
+        used_agents.extend(["hr-data-agent", "company-agent"])
+        trace.append(
+            AgentTraceStep(
+                agent="hr-data-agent",
+                status="used",
+                detail=_build_hr_trace_detail(hr_result.summary),
+            )
+        )
+        trace.append(
+            AgentTraceStep(
+                agent="company-agent",
+                status="used",
+                detail=_build_company_trace_detail(company_result),
+            )
+        )
+        context["hr_data"] = hr_result.records
+        context["company"] = company_result.records
+        evidence.extend(hr_result.evidence)
+        evidence.extend(company_result.evidence)
+    else:
+        if route in {AgentRoute.HR_DATA, AgentRoute.MIXED}:
+            hr_started_at = perf_counter()
+            hr_result = await run_hr_data_agent(
+                db,
+                session,
+                working_message,
+                intent.primary_intent,
+                intent.secondary_intents,
+            )
+            _record_duration(timings_ms, "hr_data_agent", hr_started_at)
+            used_agents.append("hr-data-agent")
+            trace.append(
+                AgentTraceStep(
+                    agent="hr-data-agent",
+                    status="used",
+                    detail=_build_hr_trace_detail(hr_result.summary),
+                )
+            )
+            context["hr_data"] = hr_result.records
+            evidence.extend(hr_result.evidence)
+
+        if route in {AgentRoute.COMPANY, AgentRoute.MIXED}:
+            company_started_at = perf_counter()
+            company_result = await run_company_agent(db, session, working_message)
+            _record_duration(timings_ms, "company_agent", company_started_at)
+            used_agents.append("company-agent")
+            trace.append(
+                AgentTraceStep(
+                    agent="company-agent",
+                    status="used",
+                    detail=_build_company_trace_detail(company_result),
+                )
+            )
+            context["company"] = company_result.records
+            evidence.extend(company_result.evidence)
+
+    _apply_orchestration_metrics(
+        context,
+        classifier_source=classifier_source,
+        provider_status=provider_status,
+        provider_reason=provider_reason,
+        used_attachment_preview=used_attachment_preview,
+        classifier_override_count=classifier_override_count,
+        semantic_retrieval_mode=semantic_result.retrieval_mode,
+        semantic_candidate_count=len(semantic_result.candidates),
+        semantic_fallback_used=semantic_fallback_used,
+        agent_capability_retrieval_mode=agent_capability_result.retrieval_mode,
+        agent_capability_candidate_count=len(agent_capability_result.candidates),
+        capability_route_promotion_used=capability_route_promotion_used,
+        timings_ms=timings_ms,
+    )
+
+    answer = _synthesize_answer(
+        route,
+        hr_result.summary if hr_result else None,
+        company_result.summary if company_result else None,
+        file_summary,
+    )
+
+    return OrchestratorResponse(
+        route=route,
+        intent=intent,
+        sensitivity=sensitivity,
+        answer=answer,
+        used_agents=used_agents,
+        evidence=evidence,
+        trace=trace,
+        extracted_attachment_text=extracted_attachment_text,
+        context=context,
+    )

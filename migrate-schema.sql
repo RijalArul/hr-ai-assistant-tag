@@ -45,6 +45,60 @@ EXCEPTION
     WHEN duplicate_object THEN null;
 END $$;
 
+DO $$ BEGIN
+    create type action_type_enum as enum ('document_generation', 'counseling_task', 'followup_chat', 'escalation', 'custom_webhook');
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
+
+DO $$ BEGIN
+    create type action_status_enum as enum ('pending', 'ready', 'in_progress', 'completed', 'failed', 'cancelled');
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
+
+DO $$ BEGIN
+    create type action_priority_enum as enum ('low', 'medium', 'high', 'urgent');
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
+
+DO $$ BEGIN
+    create type conversation_status_enum as enum ('active', 'resolved', 'escalated', 'closed');
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
+
+DO $$ BEGIN
+    create type conversation_message_role_enum as enum ('user', 'assistant', 'system');
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
+
+DO $$ BEGIN
+    create type sensitivity_level_enum as enum ('low', 'medium', 'high');
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
+
+DO $$ BEGIN
+    create type delivery_channel_enum as enum ('email', 'webhook', 'in_app', 'manual_review');
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
+
+DO $$ BEGIN
+    create type rule_trigger_enum as enum ('conversation_resolved', 'sensitivity_detected', 'action_execution_completed');
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
+
+DO $$ BEGIN
+    create type webhook_event_enum as enum ('action.created', 'action.updated', 'action.executed', 'action.delivery_requested');
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
+
 create table if not exists companies (
     id uuid primary key default gen_random_uuid(),
     name text not null,
@@ -174,6 +228,140 @@ create table if not exists payroll (
     )
 );
 
+create table if not exists rules (
+    id uuid primary key default gen_random_uuid(),
+    company_id uuid not null references companies(id) on delete cascade,
+    name text not null,
+    description text,
+    trigger rule_trigger_enum not null default 'conversation_resolved',
+    intent_key text not null,
+    sensitivity_threshold sensitivity_level_enum,
+    is_enabled boolean not null default true,
+    created_at timestamptz not null default now(),
+    updated_at timestamptz not null default now(),
+    constraint uq_rules_company_name unique (company_id, name)
+);
+
+create table if not exists rule_actions (
+    id uuid primary key default gen_random_uuid(),
+    rule_id uuid not null references rules(id) on delete cascade,
+    action_type action_type_enum not null,
+    title_template text not null,
+    summary_template text,
+    priority action_priority_enum not null default 'medium',
+    delivery_channels delivery_channel_enum[] not null default ARRAY['in_app']::delivery_channel_enum[],
+    payload_template jsonb not null default '{}'::jsonb,
+    created_at timestamptz not null default now()
+);
+
+create table if not exists conversations (
+    id uuid primary key default gen_random_uuid(),
+    company_id uuid not null references companies(id) on delete cascade,
+    employee_id uuid not null references employees(id) on delete cascade,
+    title text,
+    status conversation_status_enum not null default 'active',
+    metadata jsonb not null default '{}'::jsonb,
+    last_message_at timestamptz,
+    created_at timestamptz not null default now(),
+    updated_at timestamptz not null default now()
+);
+
+create table if not exists conversation_messages (
+    id uuid primary key default gen_random_uuid(),
+    conversation_id uuid not null references conversations(id) on delete cascade,
+    company_id uuid not null references companies(id) on delete cascade,
+    employee_id uuid not null references employees(id) on delete cascade,
+    role conversation_message_role_enum not null,
+    content text not null,
+    attachments jsonb not null default '[]'::jsonb,
+    metadata jsonb not null default '{}'::jsonb,
+    created_at timestamptz not null default now()
+);
+
+create table if not exists actions (
+    id uuid primary key default gen_random_uuid(),
+    company_id uuid not null references companies(id) on delete cascade,
+    employee_id uuid not null references employees(id) on delete cascade,
+    conversation_id uuid references conversations(id) on delete set null,
+    rule_id uuid references rules(id) on delete set null,
+    type action_type_enum not null,
+    title text not null,
+    summary text,
+    status action_status_enum not null default 'pending',
+    priority action_priority_enum not null default 'medium',
+    sensitivity sensitivity_level_enum not null default 'low',
+    delivery_channels delivery_channel_enum[] not null default ARRAY['in_app']::delivery_channel_enum[],
+    payload jsonb not null default '{}'::jsonb,
+    execution_result jsonb,
+    metadata jsonb not null default '{}'::jsonb,
+    last_executed_at timestamptz,
+    created_at timestamptz not null default now(),
+    updated_at timestamptz not null default now()
+);
+
+DO $$ BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'fk_actions_conversation_id'
+    ) THEN
+        ALTER TABLE actions
+        ADD CONSTRAINT fk_actions_conversation_id
+        FOREIGN KEY (conversation_id)
+        REFERENCES conversations(id)
+        ON DELETE SET NULL
+        NOT VALID;
+    END IF;
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
+
+create table if not exists action_logs (
+    id uuid primary key default gen_random_uuid(),
+    action_id uuid not null references actions(id) on delete cascade,
+    company_id uuid not null references companies(id) on delete cascade,
+    event_name text not null,
+    status action_status_enum not null,
+    message text,
+    metadata jsonb not null default '{}'::jsonb,
+    created_at timestamptz not null default now()
+);
+
+create table if not exists action_deliveries (
+    id uuid primary key default gen_random_uuid(),
+    action_id uuid not null references actions(id) on delete cascade,
+    company_id uuid not null references companies(id) on delete cascade,
+    channel delivery_channel_enum not null,
+    delivery_status text not null default 'queued',
+    target_reference text,
+    payload jsonb not null default '{}'::jsonb,
+    created_at timestamptz not null default now()
+);
+
+create table if not exists webhooks (
+    id uuid primary key default gen_random_uuid(),
+    company_id uuid not null references companies(id) on delete cascade,
+    name text not null,
+    target_url text not null,
+    subscribed_events webhook_event_enum[] not null,
+    secret text not null,
+    is_active boolean not null default true,
+    created_at timestamptz not null default now(),
+    updated_at timestamptz not null default now(),
+    constraint uq_webhooks_company_name unique (company_id, name)
+);
+
+create table if not exists webhook_deliveries (
+    id uuid primary key default gen_random_uuid(),
+    webhook_id uuid not null references webhooks(id) on delete cascade,
+    action_id uuid references actions(id) on delete set null,
+    event_name webhook_event_enum not null,
+    delivery_status text not null default 'queued',
+    response_status int,
+    response_body text,
+    attempted_at timestamptz not null default now()
+);
+
 create table if not exists company_rules (
     id uuid primary key default gen_random_uuid(),
     company_id uuid not null references companies(id) on delete cascade,
@@ -198,6 +386,82 @@ create table if not exists company_rule_chunks (
     metadata jsonb not null default '{}'::jsonb,
     created_at timestamptz not null default now(),
     constraint uq_company_rule_chunks unique (company_rule_id, chunk_index)
+);
+
+create table if not exists intent_examples (
+    id uuid primary key default gen_random_uuid(),
+    company_id uuid null references companies(id) on delete cascade,
+    intent_key text not null,
+    example_text text not null,
+    language text not null default 'id',
+    weight int not null default 1,
+    embedding vector(1024),
+    metadata jsonb not null default '{}'::jsonb,
+    is_active boolean not null default true,
+    created_at timestamptz not null default now(),
+    updated_at timestamptz not null default now(),
+    constraint chk_intent_examples_weight check (
+        weight between 1 and 10
+    ),
+    constraint uq_intent_examples unique (
+        company_id,
+        intent_key,
+        example_text
+    )
+);
+
+create table if not exists agent_capabilities (
+    id uuid primary key default gen_random_uuid(),
+    company_id uuid null references companies(id) on delete cascade,
+    agent_key text not null,
+    title text not null,
+    description text not null,
+    supported_intents jsonb not null default '[]'::jsonb,
+    data_sources jsonb not null default '[]'::jsonb,
+    execution_mode text not null default 'structured_lookup',
+    requires_trusted_employee_context boolean not null default false,
+    can_run_in_parallel boolean not null default true,
+    sample_queries jsonb not null default '[]'::jsonb,
+    embedding vector(1024),
+    metadata jsonb not null default '{}'::jsonb,
+    is_active boolean not null default true,
+    created_at timestamptz not null default now(),
+    updated_at timestamptz not null default now(),
+    constraint chk_agent_capabilities_execution_mode check (
+        execution_mode in (
+            'structured_lookup',
+            'policy_lookup',
+            'file_extraction'
+        )
+    ),
+    constraint uq_agent_capabilities unique (
+        company_id,
+        agent_key
+    )
+);
+
+create table if not exists classifier_keyword_overrides (
+    id uuid primary key default gen_random_uuid(),
+    company_id uuid not null references companies(id) on delete cascade,
+    classifier_type text not null,
+    target_key text not null,
+    keyword text not null,
+    weight int not null default 1,
+    is_active boolean not null default true,
+    created_at timestamptz not null default now(),
+    updated_at timestamptz not null default now(),
+    constraint chk_classifier_keyword_override_type check (
+        classifier_type in ('intent', 'sensitivity')
+    ),
+    constraint chk_classifier_keyword_override_weight check (
+        weight between 1 and 10
+    ),
+    constraint uq_classifier_keyword_overrides unique (
+        company_id,
+        classifier_type,
+        target_key,
+        keyword
+    )
 );
 
 -- Add FK after employees exists to avoid circular creation issue.
@@ -234,6 +498,47 @@ create index if not exists idx_payroll_employee_id on payroll(employee_id);
 create index if not exists idx_payroll_employee_period on payroll(employee_id, year desc, month desc);
 create index if not exists idx_payroll_payment_status on payroll(payment_status);
 
+create index if not exists idx_rules_company_id on rules(company_id);
+create index if not exists idx_rules_trigger on rules(trigger);
+create index if not exists idx_rules_intent_key on rules(intent_key);
+create index if not exists idx_rules_enabled on rules(is_enabled);
+
+create index if not exists idx_rule_actions_rule_id on rule_actions(rule_id);
+create index if not exists idx_rule_actions_action_type on rule_actions(action_type);
+
+create index if not exists idx_conversations_company_id on conversations(company_id);
+create index if not exists idx_conversations_employee_id on conversations(employee_id);
+create index if not exists idx_conversations_status on conversations(status);
+create index if not exists idx_conversations_last_message_at on conversations(last_message_at desc);
+create index if not exists idx_conversation_messages_conversation_id on conversation_messages(conversation_id);
+create index if not exists idx_conversation_messages_company_id on conversation_messages(company_id);
+create index if not exists idx_conversation_messages_created_at on conversation_messages(created_at asc);
+
+create index if not exists idx_actions_company_id on actions(company_id);
+create index if not exists idx_actions_employee_id on actions(employee_id);
+create index if not exists idx_actions_conversation_id on actions(conversation_id);
+create index if not exists idx_actions_rule_id on actions(rule_id);
+create index if not exists idx_actions_type on actions(type);
+create index if not exists idx_actions_status on actions(status);
+create index if not exists idx_actions_sensitivity on actions(sensitivity);
+create index if not exists idx_actions_created_at on actions(created_at desc);
+
+create index if not exists idx_action_logs_action_id on action_logs(action_id);
+create index if not exists idx_action_logs_company_id on action_logs(company_id);
+create index if not exists idx_action_logs_created_at on action_logs(created_at desc);
+
+create index if not exists idx_action_deliveries_action_id on action_deliveries(action_id);
+create index if not exists idx_action_deliveries_company_id on action_deliveries(company_id);
+create index if not exists idx_action_deliveries_channel on action_deliveries(channel);
+create index if not exists idx_action_deliveries_created_at on action_deliveries(created_at desc);
+
+create index if not exists idx_webhooks_company_id on webhooks(company_id);
+create index if not exists idx_webhooks_active on webhooks(is_active);
+
+create index if not exists idx_webhook_deliveries_webhook_id on webhook_deliveries(webhook_id);
+create index if not exists idx_webhook_deliveries_action_id on webhook_deliveries(action_id);
+create index if not exists idx_webhook_deliveries_attempted_at on webhook_deliveries(attempted_at desc);
+
 create index if not exists idx_company_rules_company_id on company_rules(company_id);
 create index if not exists idx_company_rules_category on company_rules(category);
 create index if not exists idx_company_rules_active on company_rules(is_active);
@@ -241,6 +546,15 @@ create index if not exists idx_company_rules_effective_date on company_rules(eff
 
 create index if not exists idx_company_rule_chunks_rule_id on company_rule_chunks(company_rule_id);
 create index if not exists idx_company_rule_chunks_company_id on company_rule_chunks(company_id);
+create index if not exists idx_intent_examples_company_id on intent_examples(company_id);
+create index if not exists idx_intent_examples_intent_key on intent_examples(intent_key);
+create index if not exists idx_intent_examples_active on intent_examples(is_active);
+create index if not exists idx_agent_capabilities_company_id on agent_capabilities(company_id);
+create index if not exists idx_agent_capabilities_agent_key on agent_capabilities(agent_key);
+create index if not exists idx_agent_capabilities_active on agent_capabilities(is_active);
+create index if not exists idx_classifier_keyword_overrides_company_id on classifier_keyword_overrides(company_id);
+create index if not exists idx_classifier_keyword_overrides_type on classifier_keyword_overrides(classifier_type, target_key);
+create index if not exists idx_classifier_keyword_overrides_active on classifier_keyword_overrides(is_active);
 
 -- Optional vector index (recommended only after data volume grows)
 -- create index if not exists idx_company_rule_chunks_embedding
@@ -292,7 +606,37 @@ create trigger trg_payroll_set_updated_at
 before update on payroll
 for each row execute function set_updated_at();
 
+drop trigger if exists trg_rules_set_updated_at on rules;
+create trigger trg_rules_set_updated_at
+before update on rules
+for each row execute function set_updated_at();
+
+drop trigger if exists trg_actions_set_updated_at on actions;
+create trigger trg_actions_set_updated_at
+before update on actions
+for each row execute function set_updated_at();
+
+drop trigger if exists trg_webhooks_set_updated_at on webhooks;
+create trigger trg_webhooks_set_updated_at
+before update on webhooks
+for each row execute function set_updated_at();
+
 drop trigger if exists trg_company_rules_set_updated_at on company_rules;
 create trigger trg_company_rules_set_updated_at
 before update on company_rules
+for each row execute function set_updated_at();
+
+drop trigger if exists trg_intent_examples_set_updated_at on intent_examples;
+create trigger trg_intent_examples_set_updated_at
+before update on intent_examples
+for each row execute function set_updated_at();
+
+drop trigger if exists trg_agent_capabilities_set_updated_at on agent_capabilities;
+create trigger trg_agent_capabilities_set_updated_at
+before update on agent_capabilities
+for each row execute function set_updated_at();
+
+drop trigger if exists trg_classifier_keyword_overrides_set_updated_at on classifier_keyword_overrides;
+create trigger trg_classifier_keyword_overrides_set_updated_at
+before update on classifier_keyword_overrides
 for each row execute function set_updated_at();

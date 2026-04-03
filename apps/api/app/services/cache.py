@@ -37,11 +37,12 @@ class LRUCache(Generic[T]):
             self._entries.move_to_end(key)
             return entry.value
 
-    def set(self, key: str, value: T) -> None:
+    def set(self, key: str, value: T, ttl_seconds: int | None = None) -> None:
         with self._lock:
+            expires_in = ttl_seconds if ttl_seconds is not None else self.ttl_seconds
             self._entries[key] = CacheEntry(
                 value=value,
-                expires_at=monotonic() + self.ttl_seconds,
+                expires_at=monotonic() + expires_in,
             )
             self._entries.move_to_end(key)
             self._evict_if_needed()
@@ -94,6 +95,34 @@ def init_cache_registry() -> dict[str, LRUCache[object]]:
                 ttl_seconds=settings.lru_cache_ttl_seconds,
             ),
             "company_rules": LRUCache(
+                max_entries=settings.lru_cache_max_entries,
+                ttl_seconds=settings.lru_cache_ttl_seconds,
+            ),
+            "intent_examples": LRUCache(
+                max_entries=settings.lru_cache_max_entries,
+                ttl_seconds=settings.lru_cache_ttl_seconds,
+            ),
+            "agent_capabilities": LRUCache(
+                max_entries=settings.lru_cache_max_entries,
+                ttl_seconds=settings.lru_cache_ttl_seconds,
+            ),
+            "classifier_config": LRUCache(
+                max_entries=settings.lru_cache_max_entries,
+                ttl_seconds=settings.lru_cache_ttl_seconds,
+            ),
+            "provider_health": LRUCache(
+                max_entries=settings.lru_cache_max_entries,
+                ttl_seconds=settings.lru_cache_ttl_seconds,
+            ),
+            "payroll_records": LRUCache(
+                max_entries=settings.lru_cache_max_entries,
+                ttl_seconds=settings.lru_cache_ttl_seconds,
+            ),
+            "attendance_records": LRUCache(
+                max_entries=settings.lru_cache_max_entries,
+                ttl_seconds=settings.lru_cache_ttl_seconds,
+            ),
+            "time_off_snapshot": LRUCache(
                 max_entries=settings.lru_cache_max_entries,
                 ttl_seconds=settings.lru_cache_ttl_seconds,
             ),

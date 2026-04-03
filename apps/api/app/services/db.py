@@ -23,6 +23,12 @@ engine = create_async_engine(
     pool_pre_ping=True,
     pool_size=5,
     max_overflow=10,
+    # Supabase pooler / PgBouncer in transaction mode is incompatible with
+    # asyncpg prepared statement caching. Disable it to avoid
+    # DuplicatePreparedStatementError during request handling.
+    connect_args={
+        "statement_cache_size": 0,
+    },
 )
 
 AsyncSessionLocal = async_sessionmaker(
