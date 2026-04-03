@@ -18,7 +18,8 @@ export default function LoginPage() {
     try {
       const res = await api.post<LoginResponse>("/auth/login", { email });
       setToken(res.access_token);
-      router.push("/chat");
+      const role = res.session.role;
+      router.push(role === "hr_admin" || role === "it_admin" ? "/hr" : "/chat");
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Login gagal");
     } finally {
@@ -69,9 +70,10 @@ export default function LoginPage() {
           </button>
         </form>
 
-        <p style={{ marginTop: 16, fontSize: 12, color: "#94a3b8", textAlign: "center" }}>
-          Demo: fakhrul.rijal@majubersama.id
-        </p>
+        <div style={{ marginTop: 16, fontSize: 12, color: "#94a3b8", textAlign: "center", lineHeight: 1.8 }}>
+          <p>Employee: fakhrul.rijal@majubersama.id</p>
+          <p>HR Admin: siti.rahayu@majubersama.id</p>
+        </div>
       </div>
     </div>
   );
