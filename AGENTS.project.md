@@ -210,6 +210,8 @@ Protect:
 - message payload shape
 - conversation response shape
 - `triggered_actions` response behavior when automation fires
+- explicit execution intent gating for action creation
+- conversation grounding should only enrich underspecified follow-ups, not override explicit standalone queries
 
 ### Actions
 Expected responsibilities:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from collections import OrderedDict
 from time import perf_counter
 from typing import Any
@@ -164,6 +165,97 @@ def _build_classification_message(
         parts.append(f"Attachment preview: {attachment_preview[:800]}")
 
     return "\n".join(part for part in parts if part)
+
+
+def _should_use_conversation_grounding(
+    message: str,
+    conversation_history: list[dict[str, str]] | None,
+) -> bool:
+    if not conversation_history:
+        return False
+
+    lowered = _normalize_message(message)
+    referential_markers = [
+        "yang tadi",
+        "tadi",
+        "itu",
+        "tersebut",
+        "yang barusan",
+        "barusan",
+        "sebelumnya",
+        "yang itu",
+    ]
+    informative_tokens = re.findall(r"[a-zA-Z0-9_]{3,}", lowered)
+    is_short_follow_up = len(informative_tokens) <= 6
+    has_referential_marker = any(marker in lowered for marker in referential_markers)
+    if has_referential_marker:
+        return True
+    if not is_short_follow_up:
+        return False
+
+    standalone_signals = [
+        "cuti",
+        "leave",
+        "payroll",
+        "payslip",
+        "slip gaji",
+        "gaji",
+        "salary",
+        "attendance",
+        "kehadiran",
+        "presensi",
+        "jam masuk",
+        "check in",
+        "check-in",
+        "aturan",
+        "policy",
+        "kebijakan",
+        "struktur",
+        "department",
+        "departemen",
+        "atasan",
+        "manager",
+        "profil",
+        "profile",
+        "saldo",
+        "status",
+    ]
+    has_standalone_signal = bool(
+        re.search(r"\b(20\d{2}|jan|feb|mar|apr|mei|may|jun|jul|agu|aug|sep|okt|oct|nov|des|dec)\b", lowered)
+    ) or any(signal in lowered for signal in standalone_signals)
+    return not has_standalone_signal
+
+
+def _build_grounded_message_from_history(
+    message: str,
+    conversation_history: list[dict[str, str]],
+) -> tuple[str, dict[str, Any]]:
+    recent_history = conversation_history[-4:]
+    history_lines: list[str] = []
+    for item in recent_history:
+        role = str(item.get("role", "unknown")).strip().lower()
+        content = str(item.get("content", "")).strip()
+        if not content:
+            continue
+        history_lines.append(f"{role}: {content[:400]}")
+
+    if not history_lines:
+        return message, {
+            "used": False,
+            "reason": "Conversation history was present but empty after normalization.",
+            "history_items": 0,
+        }
+
+    grounded_message = (
+        "Recent conversation context:\n"
+        + "\n".join(history_lines)
+        + f"\n\nCurrent user follow-up:\n{message.strip()}"
+    )
+    return grounded_message, {
+        "used": True,
+        "reason": "Recent conversation history was added because the current message looked referential or too short on its own.",
+        "history_items": len(history_lines),
+    }
 
 
 def _build_weighted_keywords(
@@ -445,6 +537,120 @@ def _resolve_route(intent: IntentAssessment) -> AgentRoute:
     return AgentRoute.OUT_OF_SCOPE
 
 
+def _build_query_policy(
+    message: str,
+    intent: IntentAssessment,
+) -> dict[str, Any]:
+    lowered = _normalize_message(message)
+    has_temporal_signal = bool(
+        re.search(r"\b(20\d{2}|jan|feb|mar|apr|mei|may|jun|jul|agu|aug|sep|okt|oct|nov|des|dec)\b", lowered)
+    ) or any(
+        phrase in lowered
+        for phrase in [
+            "bulan ini",
+            "this month",
+            "bulan lalu",
+            "last month",
+            "bulan kemarin",
+            "tahun ini",
+            "this year",
+            "tahun lalu",
+            "last year",
+            "periode terkini",
+            "period terbaru",
+            "periode terbaru",
+            "latest period",
+            "last complete month",
+            "awal bulan ini",
+            "akhir bulan ini",
+            "yang relevan terakhir",
+        ]
+    )
+    has_comparison_signal = any(
+        token in lowered
+        for token in [
+            "dibanding",
+            "compare",
+            "comparison",
+            "versus",
+            "vs",
+            "lebih rendah",
+            "lebih tinggi",
+            "lower",
+            "higher",
+            "naik",
+            "turun",
+        ]
+    )
+    has_trend_signal = any(
+        token in lowered
+        for token in [
+            "trend",
+            "tren",
+            "rata rata",
+            "rata-rata",
+            "average",
+            "avg",
+            "rolling",
+            "30 hari terakhir",
+            "sebulan terakhir",
+        ]
+    )
+    informative_tokens = re.findall(r"[a-zA-Z0-9_]{3,}", lowered)
+    is_ambiguous = (
+        intent.primary_intent in {
+            ConversationIntent.GENERAL_HR_SUPPORT,
+            ConversationIntent.OUT_OF_SCOPE,
+        }
+        or len(informative_tokens) <= 3
+    )
+
+    if intent.primary_intent in HR_DATA_INTENTS:
+        if has_comparison_signal or has_trend_signal:
+            query_class = "comparison_lookup"
+        elif has_temporal_signal:
+            query_class = "temporal_lookup"
+        else:
+            query_class = "factual_exact_lookup"
+        boundary_mode = "must_be_deterministic"
+    elif intent.primary_intent == ConversationIntent.COMPANY_STRUCTURE:
+        query_class = "factual_exact_lookup"
+        boundary_mode = "deterministic_preferred"
+    elif intent.primary_intent == ConversationIntent.COMPANY_POLICY:
+        query_class = "semantic_lookup"
+        boundary_mode = "semantic_assisted"
+    elif is_ambiguous:
+        query_class = "ambiguous_lookup"
+        boundary_mode = "needs_clarification_or_provider"
+    else:
+        query_class = "semantic_lookup"
+        boundary_mode = "semantic_assisted"
+
+    return {
+        "query_class": query_class,
+        "boundary_mode": boundary_mode,
+        "has_temporal_signal": has_temporal_signal,
+        "has_comparison_signal": has_comparison_signal,
+        "has_trend_signal": has_trend_signal,
+        "requires_structured_scope": boundary_mode in {
+            "must_be_deterministic",
+            "deterministic_preferred",
+        },
+        "is_ambiguous": is_ambiguous,
+    }
+
+
+def _build_query_policy_trace_detail(query_policy: dict[str, Any]) -> str:
+    return (
+        f"query_class={query_policy['query_class']}, "
+        f"boundary_mode={query_policy['boundary_mode']}, "
+        f"temporal={query_policy['has_temporal_signal']}, "
+        f"comparison={query_policy['has_comparison_signal']}, "
+        f"trend={query_policy['has_trend_signal']}, "
+        f"ambiguous={query_policy['is_ambiguous']}"
+    )
+
+
 def _build_sensitive_response(sensitivity: SensitivityAssessment) -> str:
     matched = ", ".join(sensitivity.matched_keywords) if sensitivity.matched_keywords else "topik sensitif"
     return (
@@ -675,6 +881,7 @@ def _build_agent_execution_plan(
     *,
     route: AgentRoute,
     intent: IntentAssessment,
+    query_policy: dict[str, Any],
     has_attachments: bool,
     agent_result: AgentCapabilityResult,
     provider_chosen_agents: list[str] | None = None,
@@ -693,10 +900,23 @@ def _build_agent_execution_plan(
         provider_route = _resolve_route_from_agent_keys(
             [agent for agent in provider_agents if agent != "file-agent"]
         )
+        deterministic_boundary = query_policy.get("boundary_mode") == "must_be_deterministic"
+        cross_domain_secondary = (
+            route == AgentRoute.HR_DATA
+            and any(item in COMPANY_INTENTS for item in intent.secondary_intents)
+        ) or (
+            route == AgentRoute.COMPANY
+            and any(item in HR_DATA_INTENTS for item in intent.secondary_intents)
+        )
         if (
             route in {AgentRoute.OUT_OF_SCOPE, AgentRoute.COMPANY, AgentRoute.HR_DATA}
             and provider_route == AgentRoute.MIXED
         ):
+            if deterministic_boundary and not cross_domain_secondary:
+                return route, route_agents, (
+                    "Provider mixed-agent suggestion was ignored because this query "
+                    "is inside a deterministic boundary."
+                )
             return AgentRoute.MIXED, ["hr-data-agent", "company-agent"], (
                 "Provider selected both hr-data-agent and company-agent."
             )
@@ -919,6 +1139,8 @@ def _apply_orchestration_metrics(
     classifier_source: str,
     provider_status: str,
     provider_reason: str,
+    query_class: str,
+    boundary_mode: str,
     used_attachment_preview: bool,
     classifier_override_count: int,
     semantic_retrieval_mode: str,
@@ -933,6 +1155,8 @@ def _apply_orchestration_metrics(
         "classifier_source": classifier_source,
         "provider_status": provider_status,
         "provider_reason": provider_reason,
+        "query_class": query_class,
+        "boundary_mode": boundary_mode,
         "used_attachment_preview": used_attachment_preview,
         "classifier_override_count": classifier_override_count,
         "semantic_retrieval_mode": semantic_retrieval_mode,
@@ -945,11 +1169,93 @@ def _apply_orchestration_metrics(
     }
 
 
+def _build_fallback_ladder(
+    *,
+    query_policy: dict[str, Any],
+    conversation_grounding: dict[str, Any],
+    classifier_source: str,
+    provider_status: str,
+    provider_reason: str,
+    semantic_result: SemanticIntentResult,
+    agent_capability_result: AgentCapabilityResult,
+    retrieval_assessment: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    ladder: list[dict[str, Any]] = [
+        {
+            "stage": "query_policy",
+            "status": query_policy["boundary_mode"],
+            "detail": (
+                f"query_class={query_policy['query_class']}, "
+                f"boundary_mode={query_policy['boundary_mode']}"
+            ),
+        },
+        {
+            "stage": "conversation_grounding",
+            "status": "used" if conversation_grounding.get("used") else "skipped",
+            "detail": str(conversation_grounding.get("reason") or "No grounding detail."),
+        },
+        {
+            "stage": "classifier",
+            "status": classifier_source,
+            "detail": provider_reason,
+        },
+        {
+            "stage": "provider_judge",
+            "status": provider_status,
+            "detail": provider_reason,
+        },
+        {
+            "stage": "semantic_intent",
+            "status": semantic_result.retrieval_mode,
+            "detail": semantic_result.fallback_reason
+            or f"{len(semantic_result.candidates)} candidate(s) available.",
+        },
+        {
+            "stage": "agent_capabilities",
+            "status": agent_capability_result.retrieval_mode,
+            "detail": agent_capability_result.fallback_reason
+            or f"{len(agent_capability_result.candidates)} candidate(s) available.",
+        },
+    ]
+
+    partial_or_weak = False
+    for domain, assessment in (retrieval_assessment or {}).items():
+        if not isinstance(assessment, dict):
+            continue
+        for section, details in assessment.items():
+            if not isinstance(details, dict):
+                continue
+            status = str(details.get("status") or "unknown")
+            if status in {"partial", "weak"}:
+                partial_or_weak = True
+            ladder.append(
+                {
+                    "stage": f"{domain}_{section}",
+                    "status": status,
+                    "detail": str(details.get("reason") or "No detail available."),
+                }
+            )
+
+    ladder.append(
+        {
+            "stage": "response_mode",
+            "status": "partial_answer" if partial_or_weak else "direct_answer",
+            "detail": (
+                "One or more retrieval stages were partial/weak, so the answer discloses limits."
+                if partial_or_weak
+                else "The answer was produced from sufficiently strong retrieval."
+            ),
+        }
+    )
+    return ladder
+
+
 async def _run_hr_data_agent_isolated(
     session: SessionContext,
     message: str,
     primary_intent: ConversationIntent,
     secondary_intents: list[ConversationIntent],
+    conversation_history: list[dict[str, str]] | None = None,
 ):
     async with AsyncSessionLocal() as isolated_db:
         return await run_hr_data_agent(
@@ -958,6 +1264,7 @@ async def _run_hr_data_agent_isolated(
             message,
             primary_intent,
             secondary_intents,
+            conversation_history=conversation_history,
         )
 
 
@@ -979,7 +1286,13 @@ async def orchestrate_message(
     evidence = []
     context: dict[str, Any] = {}
     timings_ms: dict[str, int] = {}
-    working_message = payload.message.strip()
+    agent_message = payload.message.strip()
+    routing_message = agent_message
+    conversation_grounding = {
+        "used": False,
+        "reason": "Conversation grounding was not needed for this message.",
+        "history_items": 0,
+    }
     attachment_names = [attachment.resolved_name for attachment in payload.attachments]
     extracted_attachment_text: str | None = None
     file_summary: str | None = None
@@ -1002,7 +1315,8 @@ async def orchestrate_message(
         file_summary = file_result.summary
         extracted_attachment_text = file_result.extracted_text
         if extracted_attachment_text:
-            working_message = f"{working_message}\n\nAttachment context:\n{extracted_attachment_text}"
+            agent_message = f"{agent_message}\n\nAttachment context:\n{extracted_attachment_text}"
+            routing_message = agent_message
     else:
         trace.append(
             AgentTraceStep(
@@ -1017,11 +1331,29 @@ async def orchestrate_message(
     _record_duration(timings_ms, "classifier_config", classifier_overrides_started_at)
     classifier_override_count = _count_classifier_overrides(classifier_overrides)
 
+    if _should_use_conversation_grounding(payload.message, payload.conversation_history):
+        grounded_started_at = perf_counter()
+        routing_message, conversation_grounding = _build_grounded_message_from_history(
+            agent_message,
+            payload.conversation_history,
+        )
+        _record_duration(timings_ms, "conversation_grounding", grounded_started_at)
+        trace.append(
+            AgentTraceStep(
+                agent="orchestrator",
+                status="used",
+                detail=(
+                    "Recent conversation history was used to ground a short or referential follow-up."
+                ),
+            )
+        )
+    context["conversation_grounding"] = conversation_grounding
+
     semantic_started_at = perf_counter()
     semantic_result = await retrieve_intent_candidates(
         db,
         session.company_id,
-        payload.message,
+        routing_message,
     )
     _record_duration(timings_ms, "semantic_intent_retrieval", semantic_started_at)
     semantic_fallback_intent = _build_semantic_intent_assessment(semantic_result)
@@ -1038,7 +1370,7 @@ async def orchestrate_message(
     agent_capability_result = await retrieve_agent_capabilities(
         db,
         session.company_id,
-        payload.message,
+        routing_message,
     )
     _record_duration(timings_ms, "agent_capability_retrieval", agent_capability_started_at)
     capability_route_promotion_used = False
@@ -1052,7 +1384,7 @@ async def orchestrate_message(
     )
 
     classification_message = _build_classification_message(
-        payload.message,
+        routing_message,
         attachment_names=attachment_names,
     )
     intent = classify_intent(classification_message, classifier_overrides)
@@ -1062,7 +1394,7 @@ async def orchestrate_message(
     if _should_refine_with_attachment_preview(intent, extracted_attachment_text):
         used_attachment_preview = True
         provider_input_message = _build_classification_message(
-            payload.message,
+            routing_message,
             attachment_names=attachment_names,
             attachment_preview=extracted_attachment_text,
         )
@@ -1200,11 +1532,23 @@ async def orchestrate_message(
         )
     )
 
+    query_policy = _build_query_policy(payload.message, intent)
+    context["query_policy"] = query_policy
+    trace.append(
+        AgentTraceStep(
+            agent="orchestrator",
+            status="used",
+            detail=_build_query_policy_trace_detail(query_policy),
+        )
+    )
+
     _apply_orchestration_metrics(
         context,
         classifier_source=classifier_source,
         provider_status=provider_status,
         provider_reason=provider_reason,
+        query_class=query_policy["query_class"],
+        boundary_mode=query_policy["boundary_mode"],
         used_attachment_preview=used_attachment_preview,
         classifier_override_count=classifier_override_count,
         semantic_retrieval_mode=semantic_result.retrieval_mode,
@@ -1214,6 +1558,15 @@ async def orchestrate_message(
         agent_capability_candidate_count=len(agent_capability_result.candidates),
         capability_route_promotion_used=capability_route_promotion_used,
         timings_ms=timings_ms,
+    )
+    context["fallback_ladder"] = _build_fallback_ladder(
+        query_policy=query_policy,
+        conversation_grounding=conversation_grounding,
+        classifier_source=classifier_source,
+        provider_status=provider_status,
+        provider_reason=provider_reason,
+        semantic_result=semantic_result,
+        agent_capability_result=agent_capability_result,
     )
 
     if sensitivity.level != SensitivityLevel.LOW:
@@ -1234,6 +1587,7 @@ async def orchestrate_message(
     route, planned_agent_keys, agent_plan_reason = _build_agent_execution_plan(
         route=route,
         intent=intent,
+        query_policy=query_policy,
         has_attachments=bool(payload.attachments),
         agent_result=agent_capability_result,
         provider_chosen_agents=provider_chosen_agents,
@@ -1285,6 +1639,8 @@ async def orchestrate_message(
         classifier_source=classifier_source,
         provider_status=provider_status,
         provider_reason=provider_reason,
+        query_class=query_policy["query_class"],
+        boundary_mode=query_policy["boundary_mode"],
         used_attachment_preview=used_attachment_preview,
         classifier_override_count=classifier_override_count,
         semantic_retrieval_mode=semantic_result.retrieval_mode,
@@ -1294,6 +1650,15 @@ async def orchestrate_message(
         agent_capability_candidate_count=len(agent_capability_result.candidates),
         capability_route_promotion_used=capability_route_promotion_used,
         timings_ms=timings_ms,
+    )
+    context["fallback_ladder"] = _build_fallback_ladder(
+        query_policy=query_policy,
+        conversation_grounding=conversation_grounding,
+        classifier_source=classifier_source,
+        provider_status=provider_status,
+        provider_reason=provider_reason,
+        semantic_result=semantic_result,
+        agent_capability_result=agent_capability_result,
     )
 
     if route == AgentRoute.OUT_OF_SCOPE:
@@ -1311,17 +1676,21 @@ async def orchestrate_message(
 
     hr_result = None
     company_result = None
+    company_agent_message = (
+        routing_message if conversation_grounding.get("used") else agent_message
+    )
 
     if route == AgentRoute.MIXED and isinstance(db, AsyncSession):
         mixed_started_at = perf_counter()
         hr_result, company_result = await asyncio.gather(
             _run_hr_data_agent_isolated(
                 session,
-                working_message,
+                agent_message,
                 intent.primary_intent,
                 intent.secondary_intents,
+                payload.conversation_history,
             ),
-            _run_company_agent_isolated(session, working_message),
+            _run_company_agent_isolated(session, company_agent_message),
         )
         _record_duration(timings_ms, "mixed_agents_parallel", mixed_started_at)
         used_agents.extend(["hr-data-agent", "company-agent"])
@@ -1340,7 +1709,15 @@ async def orchestrate_message(
             )
         )
         context["hr_data"] = hr_result.records
+        if hr_result.records.get("retrieval_assessment"):
+            context.setdefault("retrieval_assessment", {})["hr_data"] = hr_result.records[
+                "retrieval_assessment"
+            ]
         context["company"] = company_result.records
+        if company_result.records.get("retrieval_assessment"):
+            context.setdefault("retrieval_assessment", {})["company"] = company_result.records[
+                "retrieval_assessment"
+            ]
         evidence.extend(hr_result.evidence)
         evidence.extend(company_result.evidence)
     else:
@@ -1349,9 +1726,10 @@ async def orchestrate_message(
             hr_result = await run_hr_data_agent(
                 db,
                 session,
-                working_message,
+                agent_message,
                 intent.primary_intent,
                 intent.secondary_intents,
+                conversation_history=payload.conversation_history,
             )
             _record_duration(timings_ms, "hr_data_agent", hr_started_at)
             used_agents.append("hr-data-agent")
@@ -1363,11 +1741,15 @@ async def orchestrate_message(
                 )
             )
             context["hr_data"] = hr_result.records
+            if hr_result.records.get("retrieval_assessment"):
+                context.setdefault("retrieval_assessment", {})["hr_data"] = hr_result.records[
+                    "retrieval_assessment"
+                ]
             evidence.extend(hr_result.evidence)
 
         if route in {AgentRoute.COMPANY, AgentRoute.MIXED}:
             company_started_at = perf_counter()
-            company_result = await run_company_agent(db, session, working_message)
+            company_result = await run_company_agent(db, session, company_agent_message)
             _record_duration(timings_ms, "company_agent", company_started_at)
             used_agents.append("company-agent")
             trace.append(
@@ -1378,6 +1760,10 @@ async def orchestrate_message(
                 )
             )
             context["company"] = company_result.records
+            if company_result.records.get("retrieval_assessment"):
+                context.setdefault("retrieval_assessment", {})["company"] = company_result.records[
+                    "retrieval_assessment"
+                ]
             evidence.extend(company_result.evidence)
 
     _apply_orchestration_metrics(
@@ -1385,6 +1771,8 @@ async def orchestrate_message(
         classifier_source=classifier_source,
         provider_status=provider_status,
         provider_reason=provider_reason,
+        query_class=query_policy["query_class"],
+        boundary_mode=query_policy["boundary_mode"],
         used_attachment_preview=used_attachment_preview,
         classifier_override_count=classifier_override_count,
         semantic_retrieval_mode=semantic_result.retrieval_mode,
@@ -1394,6 +1782,16 @@ async def orchestrate_message(
         agent_capability_candidate_count=len(agent_capability_result.candidates),
         capability_route_promotion_used=capability_route_promotion_used,
         timings_ms=timings_ms,
+    )
+    context["fallback_ladder"] = _build_fallback_ladder(
+        query_policy=query_policy,
+        conversation_grounding=conversation_grounding,
+        classifier_source=classifier_source,
+        provider_status=provider_status,
+        provider_reason=provider_reason,
+        semantic_result=semantic_result,
+        agent_capability_result=agent_capability_result,
+        retrieval_assessment=context.get("retrieval_assessment"),
     )
 
     answer = _synthesize_answer(

@@ -51,6 +51,23 @@ def _normalize_text(value: str) -> str:
     return re.sub(r"\s+", " ", value.lower()).strip()
 
 
+def _normalize_rule_version_key(rule: dict[str, Any]) -> str:
+    title = _normalize_text(str(rule.get("title") or ""))
+    category = _normalize_text(str(rule.get("category") or ""))
+    return f"{category}::{title}"
+
+
+def _parse_effective_date(value: Any) -> date | None:
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str):
+        try:
+            return date.fromisoformat(value)
+        except ValueError:
+            return None
+    return None
+
+
 def _contains_term(text: str, term: str) -> bool:
     pattern = rf"(?<!\w){re.escape(term.lower())}(?!\w)"
     return re.search(pattern, text) is not None
@@ -193,6 +210,7 @@ async def _search_rule_chunks_by_vector(
                 "matched_terms": ["vector_search"],
                 "matched_chunk": data["content_chunk"],
                 "similarity": similarity,
+                "ranking_score": similarity,
             }
 
     ranked = sorted(
@@ -250,6 +268,7 @@ def _rank_rules(message: str, rules: list[dict[str, Any]]) -> list[dict[str, Any
         if score > 0:
             enriched_rule = dict(rule)
             enriched_rule["matched_terms"] = sorted(set(matched_terms))
+            enriched_rule["ranking_score"] = score
             ranked.append((score, enriched_rule))
 
     ranked.sort(
@@ -260,6 +279,191 @@ def _rank_rules(message: str, rules: list[dict[str, Any]]) -> list[dict[str, Any
         reverse=True,
     )
     return [item[1] for item in ranked[:3]]
+
+
+def _apply_policy_freshness(
+    matched_rules: list[dict[str, Any]],
+    all_rules: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    latest_by_key: dict[str, dict[str, Any]] = {}
+    for rule in all_rules:
+        key = _normalize_rule_version_key(rule)
+        effective_date = _parse_effective_date(rule.get("effective_date"))
+        existing = latest_by_key.get(key)
+        if effective_date is None:
+            continue
+        existing_effective_date = (
+            _parse_effective_date(existing.get("effective_date")) if existing else None
+        )
+        if existing is None or (
+            existing_effective_date is not None and effective_date > existing_effective_date
+        ):
+            latest_by_key[key] = dict(rule)
+
+    adjusted_by_key: dict[str, dict[str, Any]] = {}
+    for rule in matched_rules:
+        key = _normalize_rule_version_key(rule)
+        effective_date = _parse_effective_date(rule.get("effective_date"))
+        latest_rule = latest_by_key.get(key)
+        latest_effective_date = (
+            _parse_effective_date(latest_rule.get("effective_date"))
+            if latest_rule is not None
+            else None
+        )
+        enriched = dict(rule)
+        if (
+            latest_rule is not None
+            and latest_rule.get("id") != rule.get("id")
+            and latest_effective_date is not None
+            and (effective_date is None or latest_effective_date > effective_date)
+        ):
+            enriched = {
+                **dict(latest_rule),
+                "matched_terms": list(rule.get("matched_terms", [])),
+                "matched_chunk": rule.get("matched_chunk"),
+                "similarity": rule.get("similarity"),
+                "ranking_score": rule.get("ranking_score", 0.0),
+                "promoted_from_rule_id": rule.get("id"),
+                "version_source": "latest_active_version",
+            }
+            effective_date = latest_effective_date
+        else:
+            enriched["version_source"] = "matched_version"
+
+        freshness_status = "unknown"
+        if effective_date is not None and latest_effective_date is not None:
+            freshness_status = (
+                "current" if effective_date >= latest_effective_date else "outdated"
+            )
+        freshness_boost = 0.0
+        if freshness_status == "current":
+            freshness_boost = 0.04
+        elif freshness_status == "outdated":
+            freshness_boost = -0.04
+
+        ranking_score = float(rule.get("ranking_score", 0.0) or 0.0) + freshness_boost
+        enriched["freshness_status"] = freshness_status
+        enriched["latest_effective_date"] = (
+            latest_effective_date.isoformat() if latest_effective_date else None
+        )
+        enriched["ranking_score"] = round(ranking_score, 4)
+        existing = adjusted_by_key.get(key)
+        if existing is None:
+            adjusted_by_key[key] = enriched
+            continue
+
+        existing_score = float(existing.get("ranking_score", 0.0) or 0.0)
+        if ranking_score > existing_score:
+            adjusted_by_key[key] = enriched
+            continue
+
+        if ranking_score == existing_score and (
+            (enriched.get("effective_date") or "") > (existing.get("effective_date") or "")
+        ):
+            adjusted_by_key[key] = enriched
+
+    adjusted_rules = list(adjusted_by_key.values())
+    adjusted_rules.sort(
+        key=lambda item: (
+            float(item.get("ranking_score", 0.0) or 0.0),
+            item.get("effective_date") or "",
+        ),
+        reverse=True,
+    )
+    return adjusted_rules[:3]
+
+
+def _build_retrieval_assessment(
+    status: str,
+    reason: str,
+    **extra: Any,
+) -> dict[str, Any]:
+    return {
+        "status": status,
+        "reason": reason,
+        **extra,
+    }
+
+
+def _assess_policy_retrieval(
+    matched_rules: list[dict[str, Any]],
+    *,
+    retrieval_strategy: str,
+) -> dict[str, Any]:
+    if not matched_rules:
+        return _build_retrieval_assessment(
+            "weak",
+            "Referensi policy yang ditemukan belum cukup kuat untuk dijadikan jawaban utama.",
+            retrieval_strategy=retrieval_strategy,
+            match_count=0,
+        )
+
+    version_promotion_used = any(
+        rule.get("version_source") == "latest_active_version" for rule in matched_rules
+    )
+    if version_promotion_used:
+        return _build_retrieval_assessment(
+            "partial",
+            "Semantic match sempat mengarah ke versi policy yang lebih lama, jadi sistem mempromosikan versi aktif terbaru dengan policy key yang sama sebagai referensi utama.",
+            retrieval_strategy=retrieval_strategy,
+            match_count=len(matched_rules),
+            version_promotion_used=True,
+        )
+
+    if retrieval_strategy == "vector":
+        best_similarity = max(float(rule.get("similarity", 0.0) or 0.0) for rule in matched_rules)
+        top_rule = matched_rules[0]
+        if top_rule.get("freshness_status") == "outdated":
+            return _build_retrieval_assessment(
+                "partial",
+                "Rule yang paling mirip masih versi lama, jadi jawaban ini perlu dibaca dengan hati-hati sambil mengutamakan versi terbaru yang berlaku.",
+                retrieval_strategy=retrieval_strategy,
+                best_similarity=round(best_similarity, 4),
+                match_count=len(matched_rules),
+                freshness_status="outdated",
+            )
+        if best_similarity >= 0.78:
+            return _build_retrieval_assessment(
+                "enough",
+                "Kecocokan semantic policy cukup kuat untuk dipakai sebagai referensi utama.",
+                retrieval_strategy=retrieval_strategy,
+                best_similarity=round(best_similarity, 4),
+                match_count=len(matched_rules),
+            )
+        return _build_retrieval_assessment(
+            "partial",
+            "Kecocokan semantic policy masih menengah, jadi jawaban ini sebaiknya dianggap referensi awal.",
+            retrieval_strategy=retrieval_strategy,
+            best_similarity=round(best_similarity, 4),
+            match_count=len(matched_rules),
+        )
+
+    strongest_keyword_count = max(len(rule.get("matched_terms", [])) for rule in matched_rules)
+    if matched_rules[0].get("freshness_status") == "outdated":
+        return _build_retrieval_assessment(
+            "partial",
+            "Policy yang paling cocok masih versi lama, jadi jawaban ini harus dibaca sebagai referensi awal sambil mengutamakan policy terbaru yang berlaku.",
+            retrieval_strategy=retrieval_strategy,
+            strongest_keyword_count=strongest_keyword_count,
+            match_count=len(matched_rules),
+            freshness_status="outdated",
+        )
+    if len(matched_rules) >= 2 or strongest_keyword_count >= 3:
+        return _build_retrieval_assessment(
+            "enough",
+            "Keyword dan konteks policy yang ditemukan cukup kuat untuk dipakai sebagai referensi utama.",
+            retrieval_strategy=retrieval_strategy,
+            strongest_keyword_count=strongest_keyword_count,
+            match_count=len(matched_rules),
+        )
+
+    return _build_retrieval_assessment(
+        "partial",
+        "Policy yang ditemukan masih berdasarkan kecocokan keyword yang terbatas, jadi jawabannya masih bersifat awal.",
+        retrieval_strategy=retrieval_strategy,
+        strongest_keyword_count=strongest_keyword_count,
+        match_count=len(matched_rules),
+    )
 
 
 def _select_departments(
@@ -341,23 +545,32 @@ async def run_company_agent(
     message: str,
 ) -> CompanyAgentResult:
     wants_structure = _wants_structure(message)
+    rules = await _load_company_rules(db, session.company_id)
     vector_matches = await _search_rule_chunks_by_vector(db, session.company_id, message)
     if vector_matches:
-        matched_rules = vector_matches
+        matched_rules = _apply_policy_freshness(vector_matches, rules)
     else:
-        rules = await _load_company_rules(db, session.company_id)
-        matched_rules = _rank_rules(message, rules)
+        matched_rules = _apply_policy_freshness(_rank_rules(message, rules), rules)
 
     records: dict[str, Any] = {}
     evidence: list[EvidenceItem] = []
     summary_parts: list[str] = []
+    retrieval_assessment: dict[str, Any] = {}
 
     retrieval_mode = "policy_lookup"
 
     if matched_rules:
         records["matched_rules"] = matched_rules
         records["retrieval_strategy"] = "vector" if vector_matches else "keyword"
-        summary_parts.append(_summarize_rules(matched_rules))
+        policy_assessment = _assess_policy_retrieval(
+            matched_rules,
+            retrieval_strategy=records["retrieval_strategy"],
+        )
+        retrieval_assessment["policy"] = policy_assessment
+        policy_summary = _summarize_rules(matched_rules)
+        if policy_assessment["status"] == "partial":
+            policy_summary = f"{policy_assessment['reason']} {policy_summary}"
+        summary_parts.append(policy_summary)
         for rule in matched_rules:
             evidence.append(
                 EvidenceItem(
@@ -369,9 +582,19 @@ async def run_company_agent(
                         "category": rule["category"],
                         "matched_terms": rule.get("matched_terms", []),
                         "similarity": rule.get("similarity"),
+                        "retrieval_status": policy_assessment["status"],
+                        "freshness_status": rule.get("freshness_status"),
+                        "latest_effective_date": rule.get("latest_effective_date"),
+                        "version_source": rule.get("version_source"),
+                        "promoted_from_rule_id": rule.get("promoted_from_rule_id"),
                     },
                 )
             )
+    else:
+        retrieval_assessment["policy"] = _assess_policy_retrieval(
+            matched_rules,
+            retrieval_strategy="vector" if vector_matches else "keyword",
+        )
 
     if wants_structure:
         departments = await _load_company_structure(db, session.company_id)
@@ -379,6 +602,15 @@ async def run_company_agent(
         records["departments"] = selected_departments
         summary_parts.append(_summarize_structure(selected_departments))
         retrieval_mode = "mixed_lookup" if matched_rules else "structure_lookup"
+        retrieval_assessment["structure"] = _build_retrieval_assessment(
+            "enough" if selected_departments else "weak",
+            (
+                "Struktur organisasi yang relevan berhasil ditemukan."
+                if selected_departments
+                else "Struktur organisasi yang relevan belum ditemukan."
+            ),
+            department_count=len(selected_departments),
+        )
 
         for department in selected_departments:
             evidence.append(
@@ -391,6 +623,7 @@ async def run_company_agent(
                     metadata={
                         "department_id": department["department_id"],
                         "parent_department_name": department["parent_department_name"],
+                        "retrieval_status": retrieval_assessment["structure"]["status"],
                     },
                 )
             )
@@ -399,6 +632,8 @@ async def run_company_agent(
         summary_parts.append(
             "Aku belum menemukan referensi policy atau struktur perusahaan yang cukup kuat."
         )
+    if retrieval_assessment:
+        records["retrieval_assessment"] = retrieval_assessment
 
     return CompanyAgentResult(
         retrieval_mode=retrieval_mode,

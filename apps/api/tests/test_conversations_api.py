@@ -14,15 +14,17 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "apps" / "api"))
 sys.path.insert(0, str(ROOT / "packages" / "shared"))
 
-from app.agents.hr_data_agent import _resolve_relative_period
-from app.agents.orchestrator import classify_intent
+from app.agents.hr_data_agent import _resolve_relative_period, run_hr_data_agent
+from app.agents.orchestrator import classify_intent, orchestrate_message
 from app.core.security import SessionContext, get_current_session
 from app.models import (
+    AgentRoute,
     CompanyAgentResult,
     ConversationIntent,
     EvidenceItem,
     HRDataAgentResult,
     IntentAssessment,
+    OrchestratorRequest,
     SensitivityAssessment,
 )
 from app.agents.company_agent import run_company_agent
@@ -109,6 +111,38 @@ class FakeAsyncSession:
                 "net_pay": 12016000,
                 "payment_status": "paid",
                 "payment_date": "2026-03-27",
+            },
+            {
+                "employee_id": "20000000-0000-0000-0000-000000000004",
+                "company_id": "00000000-0000-0000-0000-000000000001",
+                "month": 2,
+                "year": 2026,
+                "basic_salary": 12000000,
+                "allowances": 1500000,
+                "gross_salary": 13500000,
+                "deductions": 400000,
+                "bpjs_kesehatan": 144000,
+                "bpjs_ketenagakerjaan": 240000,
+                "pph21": 700000,
+                "net_pay": 12016000,
+                "payment_status": "paid",
+                "payment_date": "2026-02-25",
+            },
+            {
+                "employee_id": "20000000-0000-0000-0000-000000000004",
+                "company_id": "00000000-0000-0000-0000-000000000001",
+                "month": 1,
+                "year": 2026,
+                "basic_salary": 12000000,
+                "allowances": 1500000,
+                "gross_salary": 13500000,
+                "deductions": 400000,
+                "bpjs_kesehatan": 144000,
+                "bpjs_ketenagakerjaan": 240000,
+                "pph21": 700000,
+                "net_pay": 12016000,
+                "payment_status": "paid",
+                "payment_date": "2026-01-28",
             }
         ]
         self.rules = [
@@ -623,6 +657,73 @@ class ConversationsApiTests(IsolatedAsyncioTestCase):
         self.assertEqual(minimax_trace["status"], "skipped")
         self.assertIn("local classifier", minimax_trace["detail"].lower())
 
+    def test_deterministic_hr_query_ignores_provider_mixed_agent_widening(self) -> None:
+        conversation_id = self._create_conversation(title="Deterministic boundary test")
+
+        async def fake_hr_agent(*_args, **_kwargs):
+            return HRDataAgentResult(
+                topics=["payroll"],
+                summary="Payroll terbaru yang ditemukan adalah periode Maret 2026 dengan net pay Rp12.016.000.",
+                records={"payroll": [{"month": 3, "year": 2026, "net_pay": 12016000}]},
+                evidence=[],
+            )
+
+        company_mock = AsyncMock()
+        with (
+            patch(
+                "app.agents.orchestrator._should_use_provider_classifier",
+                return_value=(True, "Forced provider path for deterministic-boundary regression test."),
+            ),
+            patch(
+                "app.agents.orchestrator.classify_with_minimax",
+                new=AsyncMock(
+                    return_value=ProviderClassificationResult(
+                        intent=IntentAssessment(
+                            primary_intent=ConversationIntent.PAYROLL_INFO,
+                            secondary_intents=[],
+                            confidence=0.93,
+                            matched_keywords=["salary"],
+                        ),
+                        sensitivity=SensitivityAssessment(
+                            level=SensitivityLevel.LOW,
+                            matched_keywords=[],
+                            rationale="Structured payroll request.",
+                        ),
+                        chosen_agents=["hr-data-agent", "company-agent"],
+                    )
+                ),
+            ),
+            patch(
+                "app.agents.orchestrator.run_hr_data_agent",
+                new=AsyncMock(side_effect=fake_hr_agent),
+            ),
+            patch(
+                "app.agents.orchestrator.run_company_agent",
+                new=company_mock,
+            ),
+        ):
+            response = self.client.post(
+                f"/api/v1/conversations/{conversation_id}/messages",
+                json={
+                    "message": "What is my salary this month?",
+                    "attachments": [],
+                    "metadata": {"channel": "test"},
+                },
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        self.assertEqual(payload["orchestration"]["route"], "hr_data")
+        self.assertEqual(
+            payload["orchestration"]["context"]["query_policy"]["boundary_mode"],
+            "must_be_deterministic",
+        )
+        self.assertIn(
+            "deterministic boundary",
+            payload["orchestration"]["context"]["agent_routing"]["planning_reason"].lower(),
+        )
+        company_mock.assert_not_awaited()
+
     def test_attachment_context_can_drive_company_policy_route(self) -> None:
         conversation_id = self._create_conversation(title="Attachment route test")
 
@@ -661,6 +762,110 @@ class ConversationsApiTests(IsolatedAsyncioTestCase):
         payload = response.json()
         self.assertEqual(payload["orchestration"]["route"], "company")
         self.assertIn("file-agent", payload["orchestration"]["used_agents"])
+
+    def test_referential_follow_up_uses_conversation_grounding(self) -> None:
+        conversation_id = self._create_conversation(title="Conversation grounding test")
+
+        async def fake_company_agent(*_args, **_kwargs):
+            return CompanyAgentResult(
+                retrieval_mode="policy_lookup",
+                summary="Aturan carry over cuti berlaku sampai akhir kuartal pertama.",
+                records={"matched_rules": [{"title": "Carry over leave policy"}]},
+                evidence=[],
+            )
+
+        with (
+            patch(
+                "app.agents.orchestrator.classify_with_minimax",
+                new=AsyncMock(return_value=None),
+            ),
+            patch(
+                "app.agents.orchestrator.run_company_agent",
+                new=AsyncMock(side_effect=fake_company_agent),
+            ),
+        ):
+            first_response = self.client.post(
+                f"/api/v1/conversations/{conversation_id}/messages",
+                json={
+                    "message": "Apa aturan carry over cuti?",
+                    "attachments": [],
+                    "metadata": {"channel": "test"},
+                },
+            )
+            second_response = self.client.post(
+                f"/api/v1/conversations/{conversation_id}/messages",
+                json={
+                    "message": "Yang tadi berlaku sampai kapan?",
+                    "attachments": [],
+                    "metadata": {"channel": "test"},
+                },
+            )
+
+        self.assertEqual(first_response.status_code, 200, first_response.text)
+        self.assertEqual(second_response.status_code, 200, second_response.text)
+        payload = second_response.json()
+        self.assertEqual(payload["orchestration"]["route"], "company")
+        self.assertTrue(payload["orchestration"]["context"]["conversation_grounding"]["used"])
+        self.assertGreaterEqual(
+            payload["orchestration"]["context"]["conversation_grounding"]["history_items"],
+            2,
+        )
+
+    def test_short_standalone_query_does_not_force_conversation_grounding(self) -> None:
+        conversation_id = self._create_conversation(title="Standalone query grounding test")
+
+        async def fake_company_agent(*_args, **_kwargs):
+            return CompanyAgentResult(
+                retrieval_mode="policy_lookup",
+                summary="Aturan carry over cuti berlaku sampai akhir kuartal pertama.",
+                records={"matched_rules": [{"title": "Carry over leave policy"}]},
+                evidence=[],
+            )
+
+        async def fake_hr_agent(*_args, **_kwargs):
+            return HRDataAgentResult(
+                topics=["time_off"],
+                summary="Saldo cuti Anda tersisa 8 hari.",
+                records={"time_off": {"balance_days": 8}},
+                evidence=[],
+            )
+
+        with (
+            patch(
+                "app.agents.orchestrator.classify_with_minimax",
+                new=AsyncMock(return_value=None),
+            ),
+            patch(
+                "app.agents.orchestrator.run_company_agent",
+                new=AsyncMock(side_effect=fake_company_agent),
+            ),
+            patch(
+                "app.agents.orchestrator.run_hr_data_agent",
+                new=AsyncMock(side_effect=fake_hr_agent),
+            ),
+        ):
+            first_response = self.client.post(
+                f"/api/v1/conversations/{conversation_id}/messages",
+                json={
+                    "message": "Apa aturan carry over cuti?",
+                    "attachments": [],
+                    "metadata": {"channel": "test"},
+                },
+            )
+            second_response = self.client.post(
+                f"/api/v1/conversations/{conversation_id}/messages",
+                json={
+                    "message": "Berapa sisa cuti saya?",
+                    "attachments": [],
+                    "metadata": {"channel": "test"},
+                },
+            )
+
+        self.assertEqual(first_response.status_code, 200, first_response.text)
+        self.assertEqual(second_response.status_code, 200, second_response.text)
+        payload = second_response.json()
+        self.assertEqual(payload["orchestration"]["route"], "hr_data")
+        self.assertFalse(payload["orchestration"]["context"]["conversation_grounding"]["used"])
 
     def test_escalated_conversation_stays_escalated_after_follow_up(self) -> None:
         conversation_id = self._create_conversation(title="Escalation persistence test")
@@ -818,6 +1023,633 @@ class ConversationsApiTests(IsolatedAsyncioTestCase):
         self.assertEqual(
             actions_payload["items"][0]["execution_result"]["document"]["file_name"],
             document["file_name"],
+        )
+
+    def test_exploratory_payslip_question_does_not_trigger_action(self) -> None:
+        conversation_id = self._create_conversation(title="Payslip exploratory gate test")
+
+        with patch(
+            "app.agents.orchestrator.classify_with_minimax",
+            new=AsyncMock(return_value=None),
+        ):
+            response = self.client.post(
+                f"/api/v1/conversations/{conversation_id}/messages",
+                json={
+                    "message": "Apakah saya bisa minta payslip saya bulan ini?",
+                    "attachments": [],
+                    "metadata": {"channel": "test"},
+                },
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        self.assertEqual(payload["orchestration"]["intent"]["primary_intent"], "payroll_document_request")
+        self.assertEqual(payload["triggered_actions"], [])
+        self.assertFalse(payload["orchestration"]["context"]["action_gate"]["should_trigger"])
+        self.assertEqual(
+            payload["orchestration"]["context"]["action_gate"]["mode"],
+            "exploratory_request",
+        )
+        self.assertIn(
+            "minta secara eksplisit",
+            payload["assistant_message"]["content"].lower(),
+        )
+
+        actions_response = self.client.get(f"/api/v1/conversations/{conversation_id}/actions")
+        self.assertEqual(actions_response.status_code, 200, actions_response.text)
+        self.assertEqual(actions_response.json()["total"], 0)
+
+    def test_how_to_download_payslip_question_does_not_trigger_action(self) -> None:
+        conversation_id = self._create_conversation(title="Payslip how-to gate test")
+
+        with patch(
+            "app.agents.orchestrator.classify_with_minimax",
+            new=AsyncMock(return_value=None),
+        ):
+            response = self.client.post(
+                f"/api/v1/conversations/{conversation_id}/messages",
+                json={
+                    "message": "Bagaimana cara download payslip saya bulan ini?",
+                    "attachments": [],
+                    "metadata": {"channel": "test"},
+                },
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        self.assertEqual(payload["orchestration"]["intent"]["primary_intent"], "payroll_document_request")
+        self.assertEqual(payload["triggered_actions"], [])
+        self.assertFalse(payload["orchestration"]["context"]["action_gate"]["should_trigger"])
+        self.assertEqual(
+            payload["orchestration"]["context"]["action_gate"]["mode"],
+            "exploratory_request",
+        )
+
+    def test_payroll_document_request_for_unavailable_period_stays_graceful(self) -> None:
+        conversation_id = self._create_conversation(title="Payslip unavailable period test")
+
+        with patch(
+            "app.agents.orchestrator.classify_with_minimax",
+            new=AsyncMock(return_value=None),
+        ):
+            response = self.client.post(
+                f"/api/v1/conversations/{conversation_id}/messages",
+                json={
+                    "message": "Bisakah kamu tolong generate pdf, payslip saya April 2026?",
+                    "attachments": [],
+                    "metadata": {"channel": "test"},
+                },
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        self.assertEqual(len(payload["triggered_actions"]), 1)
+        triggered_action = payload["triggered_actions"][0]
+        self.assertEqual(triggered_action["status"], "pending")
+        self.assertIsNone(triggered_action["execution_result"])
+        self.assertIn(
+            "payroll untuk periode yang diminta belum tersedia",
+            payload["assistant_message"]["content"].lower(),
+        )
+        self.assertEqual(
+            payload["orchestration"]["context"]["auto_execution_issues"][0]["action_type"],
+            "document_generation",
+        )
+        self.assertIn(
+            "Payroll record not found",
+            payload["orchestration"]["context"]["auto_execution_issues"][0]["detail"],
+        )
+
+        actions_response = self.client.get(f"/api/v1/conversations/{conversation_id}/actions")
+        self.assertEqual(actions_response.status_code, 200, actions_response.text)
+        actions_payload = actions_response.json()
+        self.assertEqual(actions_payload["total"], 1)
+        self.assertEqual(actions_payload["items"][0]["status"], "pending")
+
+    def test_repeated_payslip_request_reuses_completed_action_without_reexecution(self) -> None:
+        conversation_id = self._create_conversation(title="Payslip idempotency test")
+
+        upload_mock = AsyncMock(
+            return_value=StorageUploadResult(
+                bucket="enclosed-pocket-eojsv7k0c",
+                object_key=(
+                    "companies/00000000-0000-0000-0000-000000000001/"
+                    "employees/20000000-0000-0000-0000-000000000004/"
+                    "documents/payslips/2026/03/payslip-2026-03-fakhrul-muhammad-rijal.pdf"
+                ),
+                url="https://storage.example/payslip.pdf?signature=test",
+                expires_at="2026-04-03T12:00:00+00:00",
+                etag="etag-test",
+            )
+        )
+
+        with (
+            patch(
+                "app.agents.orchestrator.classify_with_minimax",
+                new=AsyncMock(return_value=None),
+            ),
+            patch(
+                "app.services.action_engine.upload_document_bytes",
+                new=upload_mock,
+            ),
+        ):
+            first_response = self.client.post(
+                f"/api/v1/conversations/{conversation_id}/messages",
+                json={
+                    "message": "Bisakah kamu tolong generate pdf, payslip saya?",
+                    "attachments": [],
+                    "metadata": {"channel": "test"},
+                },
+            )
+            second_response = self.client.post(
+                f"/api/v1/conversations/{conversation_id}/messages",
+                json={
+                    "message": "Bisakah kamu tolong generate pdf, payslip saya?",
+                    "attachments": [],
+                    "metadata": {"channel": "test"},
+                },
+            )
+
+        self.assertEqual(first_response.status_code, 200, first_response.text)
+        self.assertEqual(second_response.status_code, 200, second_response.text)
+        self.assertEqual(upload_mock.await_count, 1)
+
+        first_payload = first_response.json()
+        second_payload = second_response.json()
+        self.assertEqual(len(first_payload["triggered_actions"]), 1)
+        self.assertEqual(len(second_payload["triggered_actions"]), 1)
+        self.assertEqual(
+            second_payload["triggered_actions"][0]["id"],
+            first_payload["triggered_actions"][0]["id"],
+        )
+        self.assertEqual(second_payload["triggered_actions"][0]["status"], "completed")
+
+        actions_response = self.client.get(f"/api/v1/conversations/{conversation_id}/actions")
+        self.assertEqual(actions_response.status_code, 200, actions_response.text)
+        actions_payload = actions_response.json()
+        self.assertEqual(actions_payload["total"], 1)
+
+    def test_payroll_question_for_current_month_uses_latest_available_context(self) -> None:
+        conversation_id = self._create_conversation(title="Payroll current month fallback test")
+
+        class _FixedDateTime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return datetime(2026, 4, 3, tzinfo=tz or UTC)
+
+        with (
+            patch(
+                "app.agents.orchestrator.classify_with_minimax",
+                new=AsyncMock(return_value=None),
+            ),
+            patch(
+                "app.agents.hr_data_agent.datetime",
+                _FixedDateTime,
+            ),
+        ):
+            response = self.client.post(
+                f"/api/v1/conversations/{conversation_id}/messages",
+                json={
+                    "message": "Why my salary this month is lower ?",
+                    "attachments": [],
+                    "metadata": {"channel": "test"},
+                },
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        content = payload["assistant_message"]["content"]
+        self.assertEqual(payload["orchestration"]["route"], "hr_data")
+        self.assertIn("belum menemukan payroll untuk periode April 2026", content)
+        self.assertIn("Payroll terbaru yang tersedia adalah periode Maret 2026", content)
+        self.assertIn("tidak lebih rendah", content)
+        self.assertEqual(
+            payload["orchestration"]["context"]["retrieval_assessment"]["hr_data"]["payroll"]["status"],
+            "partial",
+        )
+        self.assertEqual(
+            payload["orchestration"]["context"]["fallback_ladder"][-1]["status"],
+            "partial_answer",
+        )
+
+    def test_payroll_question_explains_drop_against_previous_period(self) -> None:
+        conversation_id = self._create_conversation(title="Payroll comparison explanation test")
+        self.db.payroll_records[0]["net_pay"] = 11500000
+        self.db.payroll_records[0]["deductions"] = 916000
+
+        with patch(
+            "app.agents.orchestrator.classify_with_minimax",
+            new=AsyncMock(return_value=None),
+        ):
+            response = self.client.post(
+                f"/api/v1/conversations/{conversation_id}/messages",
+                json={
+                    "message": "Why my salary in March 2026 is lower ?",
+                    "attachments": [],
+                    "metadata": {"channel": "test"},
+                },
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        content = payload["assistant_message"]["content"]
+        self.assertIn("periode Maret 2026", content)
+        self.assertIn("net pay turun", content)
+        self.assertIn("potongan naik", content)
+
+    async def test_hr_data_agent_early_month_attendance_average_uses_last_complete_period(self) -> None:
+        class _FixedDateTime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return datetime(2026, 4, 3, tzinfo=tz or UTC)
+
+        current_month_records = [
+            {
+                "attendance_date": "2026-04-02",
+                "check_in": "09:12:00",
+                "check_out": "18:01:00",
+                "status": "present",
+            },
+            {
+                "attendance_date": "2026-04-01",
+                "check_in": "09:05:00",
+                "check_out": "17:55:00",
+                "status": "present",
+            },
+        ]
+        last_complete_month_records = [
+            {
+                "attendance_date": "2026-03-31",
+                "check_in": "08:58:00",
+                "check_out": "17:57:00",
+                "status": "present",
+            },
+            {
+                "attendance_date": "2026-03-30",
+                "check_in": "08:56:00",
+                "check_out": "17:59:00",
+                "status": "present",
+            },
+            {
+                "attendance_date": "2026-03-27",
+                "check_in": "09:01:00",
+                "check_out": "18:02:00",
+                "status": "present",
+            },
+            {
+                "attendance_date": "2026-03-26",
+                "check_in": "08:59:00",
+                "check_out": "17:58:00",
+                "status": "present",
+            },
+        ]
+
+        with (
+            patch("app.agents.hr_data_agent.datetime", _FixedDateTime),
+            patch(
+                "app.agents.hr_data_agent._get_attendance_records",
+                new=AsyncMock(
+                    side_effect=[current_month_records, last_complete_month_records]
+                ),
+            ),
+        ):
+            result = await run_hr_data_agent(
+                self.db,
+                self.session,
+                "Rata-rata jam masuk saya bulan ini berapa?",
+                ConversationIntent.ATTENDANCE_REVIEW,
+            )
+
+        assessment = result.records["retrieval_assessment"]["attendance"]
+        self.assertEqual(assessment["status"], "partial")
+        self.assertEqual(assessment["fallback_mode"], "last_complete_period")
+        self.assertEqual(assessment["fallback_period_label"], "Maret 2026")
+        self.assertIn("periode lengkap terakhir Maret 2026", result.summary)
+
+    async def test_hr_data_agent_referential_follow_up_inherits_recent_period(self) -> None:
+        payroll_mock = AsyncMock(
+            return_value=[
+                {
+                    "month": 3,
+                    "year": 2026,
+                    "gross_salary": 13500000,
+                    "net_pay": 12016000,
+                    "payment_status": "paid",
+                }
+            ]
+        )
+
+        with patch(
+            "app.agents.hr_data_agent._get_payroll_records",
+            new=payroll_mock,
+        ):
+            result = await run_hr_data_agent(
+                self.db,
+                self.session,
+                "Yang tadi potongan apa saja?",
+                ConversationIntent.PAYROLL_INFO,
+                conversation_history=[
+                    {
+                        "role": "user",
+                        "content": "Kenapa gaji Maret 2026 saya lebih rendah?",
+                    },
+                    {
+                        "role": "assistant",
+                        "content": "Net pay Maret 2026 lebih rendah karena potongan naik.",
+                    },
+                ],
+            )
+
+        self.assertEqual(payroll_mock.await_count, 1)
+        self.assertEqual(payroll_mock.await_args.args[2:], (3, 2026))
+        self.assertIn("Maret 2026", result.summary)
+
+    async def test_hr_data_agent_explicit_period_overrides_inherited_history_period(self) -> None:
+        payroll_mock = AsyncMock(
+            return_value=[
+                {
+                    "month": 4,
+                    "year": 2026,
+                    "gross_salary": 13650000,
+                    "net_pay": 12100000,
+                    "payment_status": "paid",
+                }
+            ]
+        )
+
+        with patch(
+            "app.agents.hr_data_agent._get_payroll_records",
+            new=payroll_mock,
+        ):
+            result = await run_hr_data_agent(
+                self.db,
+                self.session,
+                "Yang tadi tapi untuk April 2026 bagaimana?",
+                ConversationIntent.PAYROLL_INFO,
+                conversation_history=[
+                    {
+                        "role": "user",
+                        "content": "Kenapa gaji Maret 2026 saya lebih rendah?",
+                    },
+                    {
+                        "role": "assistant",
+                        "content": "Net pay Maret 2026 lebih rendah karena potongan naik.",
+                    },
+                ],
+            )
+
+        self.assertEqual(payroll_mock.await_count, 1)
+        self.assertEqual(payroll_mock.await_args.args[2:], (4, 2026))
+        self.assertIn("April 2026", result.summary)
+
+    async def test_company_agent_marks_limited_policy_match_as_partial(self) -> None:
+        with (
+            patch(
+                "app.agents.company_agent._search_rule_chunks_by_vector",
+                new=AsyncMock(return_value=[]),
+            ),
+            patch(
+                "app.agents.company_agent._load_company_rules",
+                new=AsyncMock(
+                    return_value=[
+                        {
+                            "id": "rule-1",
+                            "title": "Remote Work Guideline",
+                            "category": "work_arrangement",
+                            "content": "Remote work is allowed for approved hybrid schedules only.",
+                            "effective_date": "2026-01-01",
+                            "is_active": True,
+                        }
+                    ]
+                ),
+            ),
+        ):
+            result = await run_company_agent(
+                self.db,
+                self.session,
+                "Apa aturan remote?",
+            )
+
+        assessment = result.records["retrieval_assessment"]["policy"]
+        self.assertEqual(assessment["status"], "partial")
+        self.assertIn("bersifat awal", result.summary.lower())
+
+    async def test_company_agent_prefers_current_policy_version_when_versions_compete(self) -> None:
+        with (
+            patch(
+                "app.agents.company_agent._search_rule_chunks_by_vector",
+                new=AsyncMock(
+                    return_value=[
+                        {
+                            "id": "rule-old",
+                            "title": "Work From Home Policy",
+                            "category": "work_arrangement",
+                            "content": "Old remote work policy.",
+                            "effective_date": "2025-01-01",
+                            "is_active": True,
+                            "matched_terms": ["vector_search"],
+                            "matched_chunk": "Old remote work policy.",
+                            "similarity": 0.88,
+                            "ranking_score": 0.88,
+                        },
+                        {
+                            "id": "rule-new",
+                            "title": "Work From Home Policy",
+                            "category": "work_arrangement",
+                            "content": "Current remote work policy.",
+                            "effective_date": "2026-02-01",
+                            "is_active": True,
+                            "matched_terms": ["vector_search"],
+                            "matched_chunk": "Current remote work policy.",
+                            "similarity": 0.85,
+                            "ranking_score": 0.85,
+                        },
+                    ]
+                ),
+            ),
+            patch(
+                "app.agents.company_agent._load_company_rules",
+                new=AsyncMock(
+                    return_value=[
+                        {
+                            "id": "rule-old",
+                            "title": "Work From Home Policy",
+                            "category": "work_arrangement",
+                            "content": "Old remote work policy.",
+                            "effective_date": "2025-01-01",
+                            "is_active": True,
+                        },
+                        {
+                            "id": "rule-new",
+                            "title": "Work From Home Policy",
+                            "category": "work_arrangement",
+                            "content": "Current remote work policy.",
+                            "effective_date": "2026-02-01",
+                            "is_active": True,
+                        },
+                    ]
+                ),
+            ),
+        ):
+            result = await run_company_agent(
+                self.db,
+                self.session,
+                "Apa aturan remote work terbaru?",
+            )
+
+        matched_rules = result.records["matched_rules"]
+        self.assertEqual(matched_rules[0]["id"], "rule-new")
+        self.assertEqual(matched_rules[0]["freshness_status"], "current")
+        self.assertEqual(matched_rules[0]["version_source"], "latest_active_version")
+        self.assertIn("Current remote work policy.", result.summary)
+        self.assertNotIn("Old remote work policy.", result.summary)
+
+    async def test_company_agent_promotes_latest_policy_when_only_old_version_matches(self) -> None:
+        with (
+            patch(
+                "app.agents.company_agent._search_rule_chunks_by_vector",
+                new=AsyncMock(
+                    return_value=[
+                        {
+                            "id": "rule-old",
+                            "title": "Work From Home Policy",
+                            "category": "work_arrangement",
+                            "content": "Old remote work policy.",
+                            "effective_date": "2025-01-01",
+                            "is_active": True,
+                            "matched_terms": ["vector_search"],
+                            "matched_chunk": "Old remote work policy.",
+                            "similarity": 0.88,
+                            "ranking_score": 0.88,
+                        }
+                    ]
+                ),
+            ),
+            patch(
+                "app.agents.company_agent._load_company_rules",
+                new=AsyncMock(
+                    return_value=[
+                        {
+                            "id": "rule-old",
+                            "title": "Work From Home Policy",
+                            "category": "work_arrangement",
+                            "content": "Old remote work policy.",
+                            "effective_date": "2025-01-01",
+                            "is_active": True,
+                        },
+                        {
+                            "id": "rule-new",
+                            "title": "Work From Home Policy",
+                            "category": "work_arrangement",
+                            "content": "Current remote work policy.",
+                            "effective_date": "2026-02-01",
+                            "is_active": True,
+                        },
+                    ]
+                ),
+            ),
+        ):
+            result = await run_company_agent(
+                self.db,
+                self.session,
+                "Apa aturan remote work terbaru?",
+            )
+
+        assessment = result.records["retrieval_assessment"]["policy"]
+        matched_rules = result.records["matched_rules"]
+        self.assertEqual(assessment["status"], "partial")
+        self.assertTrue(assessment["version_promotion_used"])
+        self.assertEqual(matched_rules[0]["id"], "rule-new")
+        self.assertEqual(matched_rules[0]["promoted_from_rule_id"], "rule-old")
+        self.assertEqual(matched_rules[0]["version_source"], "latest_active_version")
+        self.assertIn("Current remote work policy.", result.summary)
+        self.assertNotIn("Old remote work policy.", result.summary)
+
+    async def test_orchestrator_uses_grounding_for_routing_without_polluting_hr_agent_input(self) -> None:
+        semantic_mock = AsyncMock(
+            return_value=SemanticIntentResult(
+                candidates=[],
+                retrieval_mode="disabled",
+                fallback_reason="test",
+            )
+        )
+        capability_mock = AsyncMock(
+            return_value=AgentCapabilityResult(
+                candidates=[],
+                retrieval_mode="disabled",
+                fallback_reason="test",
+            )
+        )
+
+        async def fake_hr_agent(*args, **kwargs):
+            self.assertEqual(args[2], "Yang tadi tapi untuk April 2026 bagaimana?")
+            self.assertEqual(
+                kwargs["conversation_history"][0]["content"],
+                "Kenapa gaji Maret 2026 saya lebih rendah?",
+            )
+            return HRDataAgentResult(
+                topics=["payroll"],
+                summary="Payroll terbaru yang ditemukan adalah periode April 2026 dengan net pay Rp12.100.000.",
+                records={
+                    "payroll": [
+                        {
+                            "month": 4,
+                            "year": 2026,
+                            "net_pay": 12100000,
+                            "gross_salary": 13650000,
+                            "payment_status": "paid",
+                        }
+                    ]
+                },
+                evidence=[],
+            )
+
+        with (
+            patch(
+                "app.agents.orchestrator.retrieve_intent_candidates",
+                new=semantic_mock,
+            ),
+            patch(
+                "app.agents.orchestrator.retrieve_agent_capabilities",
+                new=capability_mock,
+            ),
+            patch(
+                "app.agents.orchestrator._should_use_provider_classifier",
+                return_value=(False, "Test skipped provider."),
+            ),
+            patch(
+                "app.agents.orchestrator.run_hr_data_agent",
+                new=AsyncMock(side_effect=fake_hr_agent),
+            ),
+        ):
+            result = await orchestrate_message(
+                self.db,
+                self.session,
+                OrchestratorRequest(
+                    message="Yang tadi tapi untuk April 2026 bagaimana?",
+                    attachments=[],
+                    conversation_history=[
+                        {
+                            "role": "user",
+                            "content": "Kenapa gaji Maret 2026 saya lebih rendah?",
+                        },
+                        {
+                            "role": "assistant",
+                            "content": "Net pay Maret 2026 lebih rendah karena potongan naik.",
+                        },
+                    ],
+                ),
+            )
+
+        self.assertEqual(result.route, AgentRoute.HR_DATA)
+        self.assertTrue(result.context["conversation_grounding"]["used"])
+        self.assertIn(
+            "Kenapa gaji Maret 2026 saya lebih rendah?",
+            semantic_mock.await_args.args[2],
+        )
+        self.assertIn(
+            "Yang tadi tapi untuk April 2026 bagaimana?",
+            semantic_mock.await_args.args[2],
         )
 
     def test_minimax_fallback_reason_is_exposed_in_trace(self) -> None:

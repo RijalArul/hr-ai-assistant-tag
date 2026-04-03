@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from uuid import UUID
 
@@ -102,6 +103,10 @@ def _conversation_message_from_row(row: dict) -> ConversationMessageResponse:
     return ConversationMessageResponse.model_validate(dict(row))
 
 
+def _normalize_message(message: str) -> str:
+    return re.sub(r"\s+", " ", message.lower()).strip()
+
+
 def _build_action_follow_up_note(triggered_actions: list[ActionResponse]) -> str | None:
     if not triggered_actions:
         return None
@@ -129,6 +134,153 @@ def _build_action_follow_up_note(triggered_actions: list[ActionResponse]) -> str
     return (
         f" Aku juga sudah membuat {len(triggered_actions)} action tindak lanjut "
         "dari percakapan ini."
+    )
+
+
+def _assess_action_execution_intent(
+    message: str,
+    *,
+    intent_key: str,
+) -> dict[str, object]:
+    if intent_key != "payroll_document_request":
+        return {
+            "mode": "not_applicable",
+            "should_trigger": False,
+            "reason": "No executable action gate was needed for this intent.",
+        }
+
+    lowered = _normalize_message(message)
+    has_document_target = any(
+        token in lowered
+        for token in ["payslip", "salary slip", "pay slip", "slip gaji", "pdf"]
+    )
+    has_strong_execution_verb = any(
+        token in lowered
+        for token in [
+            "generate",
+            "buatkan",
+            "buat",
+            "kirimkan",
+            "kirim",
+            "send",
+            "emailkan",
+            "email",
+            "downloadkan",
+            "download",
+            "siapkan",
+            "prepare",
+            "terbitkan",
+        ]
+    )
+    addresses_assistant_directly = any(
+        token in lowered
+        for token in [
+            "tolong",
+            "please",
+            "bantu",
+            "bisakah kamu",
+            "could you",
+            "can you",
+            "minta tolong",
+        ]
+    )
+    exploratory_markers = any(
+        token in lowered
+        for token in [
+            "bagaimana",
+            "how",
+            "cara",
+            "apakah",
+            "what",
+            "bisa nggak",
+            "bisa gak",
+            "bisakah saya",
+            "can i",
+            "could i",
+        ]
+    )
+
+    if (
+        has_document_target
+        and exploratory_markers
+        and not (addresses_assistant_directly and has_strong_execution_verb)
+    ):
+        return {
+            "mode": "exploratory_request",
+            "should_trigger": False,
+            "reason": "The user appears to be asking about document availability, not requesting execution yet.",
+        }
+
+    if has_document_target and (
+        has_strong_execution_verb
+        or (addresses_assistant_directly and not exploratory_markers)
+    ):
+        return {
+            "mode": "execution_request",
+            "should_trigger": True,
+            "reason": "The user explicitly asked the assistant to generate or deliver the document.",
+        }
+
+    return {
+        "mode": "topic_only",
+        "should_trigger": False,
+        "reason": "The message mentions a document topic but does not clearly request execution.",
+    }
+
+
+def _build_action_gate_note(action_gate: dict[str, object]) -> str | None:
+    if action_gate.get("should_trigger"):
+        return None
+    if action_gate.get("mode") not in {"exploratory_request", "topic_only"}:
+        return None
+
+    return (
+        " Kalau kamu memang ingin aku langsung membuat action atau generate dokumennya, "
+        "minta secara eksplisit, misalnya: tolong generate PDF payslip saya untuk Maret 2026."
+    )
+
+
+def _build_orchestrator_history(
+    messages: list[ConversationMessageResponse],
+    *,
+    max_items: int = 4,
+) -> list[dict[str, str]]:
+    history: list[dict[str, str]] = []
+    for message in messages[-max_items:]:
+        history.append(
+            {
+                "role": message.role.value,
+                "content": message.content,
+            }
+        )
+    return history
+
+
+def _build_auto_execution_issue_note(
+    action: ActionResponse,
+    exc: Exception,
+) -> str:
+    if (
+        isinstance(exc, HTTPException)
+        and exc.status_code == status.HTTP_404_NOT_FOUND
+        and action.type.value == "document_generation"
+        and getattr(action.payload, "document_type", None) in {"salary_slip", "payslip"}
+    ):
+        return (
+            " PDF payslip belum bisa digenerate otomatis karena payroll untuk periode "
+            "yang diminta belum tersedia."
+        )
+
+    if isinstance(exc, HTTPException):
+        detail = exc.detail if isinstance(exc.detail, str) else "eksekusi otomatis gagal."
+        return (
+            " Action tindak lanjutnya sudah dibuat, tapi eksekusi otomatisnya belum "
+            f"berhasil: {detail}"
+        )
+
+    return (
+        " Action tindak lanjutnya sudah dibuat, tapi eksekusi otomatisnya belum "
+        "berhasil dan masih bisa ditinjau manual."
     )
 
 
@@ -360,6 +512,11 @@ async def create_conversation_message(
     )
 
     user_attachments = [attachment.model_dump(mode="json") for attachment in payload.attachments]
+    prior_messages = await _list_conversation_messages(
+        db,
+        conversation_id,
+        session.company_id,
+    )
     user_message = await _insert_conversation_message(
         db,
         conversation_id=str(conversation_id),
@@ -424,6 +581,7 @@ async def create_conversation_message(
         OrchestratorRequest(
             message=effective_message,
             attachments=payload.attachments,
+            conversation_history=_build_orchestrator_history(prior_messages),
         ),
     )
 
@@ -440,9 +598,16 @@ async def create_conversation_message(
     orchestration = orchestration.model_copy(update={"answer": output_result.response})
 
     triggered_actions: list[ActionResponse] = []
+    auto_execution_issues: list[dict[str, object]] = []
+    auto_execution_issue_notes: list[str] = []
+    action_gate = _assess_action_execution_intent(
+        payload.message,
+        intent_key=orchestration.intent.primary_intent.value,
+    )
     if (
         orchestration.intent.primary_intent.value == "payroll_document_request"
         and orchestration.route != AgentRoute.SENSITIVE_REDIRECT
+        and bool(action_gate["should_trigger"])
     ):
         triggered_actions = await create_actions_from_rule_trigger(
             db,
@@ -456,29 +621,53 @@ async def create_conversation_message(
         finalized_actions: list[ActionResponse] = []
         for action in triggered_actions:
             if should_auto_execute_action(action):
-                execution = await execute_action(
-                    db,
-                    action.id,
-                    ActionExecutionRequest(
-                        trigger_delivery=False,
-                        executor_note=(
-                            "Auto-generated from employee self-service conversation."
+                try:
+                    execution = await execute_action(
+                        db,
+                        action.id,
+                        ActionExecutionRequest(
+                            trigger_delivery=False,
+                            executor_note=(
+                                "Auto-generated from employee self-service conversation."
+                            ),
                         ),
-                    ),
-                    session,
-                )
+                        session,
+                    )
+                except Exception as exc:
+                    auto_execution_issues.append(
+                        {
+                            "action_id": str(action.id),
+                            "action_type": action.type.value,
+                            "status": action.status.value,
+                            "detail": (
+                                exc.detail
+                                if isinstance(exc, HTTPException)
+                                and isinstance(exc.detail, str)
+                                else str(exc) or "Automatic execution failed."
+                            ),
+                        }
+                    )
+                    auto_execution_issue_notes.append(
+                        _build_auto_execution_issue_note(action, exc)
+                    )
+                    finalized_actions.append(action)
+                    continue
                 finalized_actions.append(execution.action)
                 continue
             finalized_actions.append(action)
         triggered_actions = finalized_actions
 
     action_note = _build_action_follow_up_note(triggered_actions)
-    if action_note:
+    gate_note = _build_action_gate_note(action_gate)
+    issue_note = "".join(auto_execution_issue_notes) if auto_execution_issue_notes else None
+    combined_note = "".join(note for note in [action_note, gate_note, issue_note] if note)
+    if combined_note:
         orchestration = orchestration.model_copy(
             update={
-                "answer": f"{orchestration.answer}{action_note}",
+                "answer": f"{orchestration.answer}{combined_note}",
                 "context": {
                     **orchestration.context,
+                    "action_gate": action_gate,
                     "triggered_actions": [
                         {
                             "id": str(action.id),
@@ -488,7 +677,17 @@ async def create_conversation_message(
                         }
                         for action in triggered_actions
                     ],
+                    "auto_execution_issues": auto_execution_issues,
                 },
+            }
+        )
+    else:
+        orchestration = orchestration.model_copy(
+            update={
+                "context": {
+                    **orchestration.context,
+                    "action_gate": action_gate,
+                }
             }
         )
 
