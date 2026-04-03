@@ -7,4 +7,4 @@
   package = "@netlify/plugin-nextjs"
 
 [context.production.environment]
-  NEXT_PUBLIC_API_URL = "https://api.hr-ai.io/api/v1"
+  NEXT_PUBLIC_API_URL = "https://hr-ai-assistant-tag-production.up.railway.app"

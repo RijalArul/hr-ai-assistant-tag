@@ -285,22 +285,51 @@ def _apply_policy_freshness(
     matched_rules: list[dict[str, Any]],
     all_rules: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    latest_by_key: dict[str, date] = {}
+    latest_by_key: dict[str, dict[str, Any]] = {}
     for rule in all_rules:
         key = _normalize_rule_version_key(rule)
         effective_date = _parse_effective_date(rule.get("effective_date"))
         existing = latest_by_key.get(key)
         if effective_date is None:
             continue
-        if existing is None or effective_date > existing:
-            latest_by_key[key] = effective_date
+        existing_effective_date = (
+            _parse_effective_date(existing.get("effective_date")) if existing else None
+        )
+        if existing is None or (
+            existing_effective_date is not None and effective_date > existing_effective_date
+        ):
+            latest_by_key[key] = dict(rule)
 
-    adjusted_rules: list[dict[str, Any]] = []
+    adjusted_by_key: dict[str, dict[str, Any]] = {}
     for rule in matched_rules:
-        enriched = dict(rule)
         key = _normalize_rule_version_key(rule)
         effective_date = _parse_effective_date(rule.get("effective_date"))
-        latest_effective_date = latest_by_key.get(key)
+        latest_rule = latest_by_key.get(key)
+        latest_effective_date = (
+            _parse_effective_date(latest_rule.get("effective_date"))
+            if latest_rule is not None
+            else None
+        )
+        enriched = dict(rule)
+        if (
+            latest_rule is not None
+            and latest_rule.get("id") != rule.get("id")
+            and latest_effective_date is not None
+            and (effective_date is None or latest_effective_date > effective_date)
+        ):
+            enriched = {
+                **dict(latest_rule),
+                "matched_terms": list(rule.get("matched_terms", [])),
+                "matched_chunk": rule.get("matched_chunk"),
+                "similarity": rule.get("similarity"),
+                "ranking_score": rule.get("ranking_score", 0.0),
+                "promoted_from_rule_id": rule.get("id"),
+                "version_source": "latest_active_version",
+            }
+            effective_date = latest_effective_date
+        else:
+            enriched["version_source"] = "matched_version"
+
         freshness_status = "unknown"
         if effective_date is not None and latest_effective_date is not None:
             freshness_status = (
@@ -318,8 +347,22 @@ def _apply_policy_freshness(
             latest_effective_date.isoformat() if latest_effective_date else None
         )
         enriched["ranking_score"] = round(ranking_score, 4)
-        adjusted_rules.append(enriched)
+        existing = adjusted_by_key.get(key)
+        if existing is None:
+            adjusted_by_key[key] = enriched
+            continue
 
+        existing_score = float(existing.get("ranking_score", 0.0) or 0.0)
+        if ranking_score > existing_score:
+            adjusted_by_key[key] = enriched
+            continue
+
+        if ranking_score == existing_score and (
+            (enriched.get("effective_date") or "") > (existing.get("effective_date") or "")
+        ):
+            adjusted_by_key[key] = enriched
+
+    adjusted_rules = list(adjusted_by_key.values())
     adjusted_rules.sort(
         key=lambda item: (
             float(item.get("ranking_score", 0.0) or 0.0),
@@ -353,6 +396,18 @@ def _assess_policy_retrieval(
             "Referensi policy yang ditemukan belum cukup kuat untuk dijadikan jawaban utama.",
             retrieval_strategy=retrieval_strategy,
             match_count=0,
+        )
+
+    version_promotion_used = any(
+        rule.get("version_source") == "latest_active_version" for rule in matched_rules
+    )
+    if version_promotion_used:
+        return _build_retrieval_assessment(
+            "partial",
+            "Semantic match sempat mengarah ke versi policy yang lebih lama, jadi sistem mempromosikan versi aktif terbaru dengan policy key yang sama sebagai referensi utama.",
+            retrieval_strategy=retrieval_strategy,
+            match_count=len(matched_rules),
+            version_promotion_used=True,
         )
 
     if retrieval_strategy == "vector":
@@ -530,6 +585,8 @@ async def run_company_agent(
                         "retrieval_status": policy_assessment["status"],
                         "freshness_status": rule.get("freshness_status"),
                         "latest_effective_date": rule.get("latest_effective_date"),
+                        "version_source": rule.get("version_source"),
+                        "promoted_from_rule_id": rule.get("promoted_from_rule_id"),
                     },
                 )
             )

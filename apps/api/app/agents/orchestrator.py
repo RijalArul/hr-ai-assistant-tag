@@ -1255,6 +1255,7 @@ async def _run_hr_data_agent_isolated(
     message: str,
     primary_intent: ConversationIntent,
     secondary_intents: list[ConversationIntent],
+    conversation_history: list[dict[str, str]] | None = None,
 ):
     async with AsyncSessionLocal() as isolated_db:
         return await run_hr_data_agent(
@@ -1263,6 +1264,7 @@ async def _run_hr_data_agent_isolated(
             message,
             primary_intent,
             secondary_intents,
+            conversation_history=conversation_history,
         )
 
 
@@ -1284,7 +1286,8 @@ async def orchestrate_message(
     evidence = []
     context: dict[str, Any] = {}
     timings_ms: dict[str, int] = {}
-    working_message = payload.message.strip()
+    agent_message = payload.message.strip()
+    routing_message = agent_message
     conversation_grounding = {
         "used": False,
         "reason": "Conversation grounding was not needed for this message.",
@@ -1312,7 +1315,8 @@ async def orchestrate_message(
         file_summary = file_result.summary
         extracted_attachment_text = file_result.extracted_text
         if extracted_attachment_text:
-            working_message = f"{working_message}\n\nAttachment context:\n{extracted_attachment_text}"
+            agent_message = f"{agent_message}\n\nAttachment context:\n{extracted_attachment_text}"
+            routing_message = agent_message
     else:
         trace.append(
             AgentTraceStep(
@@ -1329,8 +1333,8 @@ async def orchestrate_message(
 
     if _should_use_conversation_grounding(payload.message, payload.conversation_history):
         grounded_started_at = perf_counter()
-        working_message, conversation_grounding = _build_grounded_message_from_history(
-            working_message,
+        routing_message, conversation_grounding = _build_grounded_message_from_history(
+            agent_message,
             payload.conversation_history,
         )
         _record_duration(timings_ms, "conversation_grounding", grounded_started_at)
@@ -1349,7 +1353,7 @@ async def orchestrate_message(
     semantic_result = await retrieve_intent_candidates(
         db,
         session.company_id,
-        working_message,
+        routing_message,
     )
     _record_duration(timings_ms, "semantic_intent_retrieval", semantic_started_at)
     semantic_fallback_intent = _build_semantic_intent_assessment(semantic_result)
@@ -1366,7 +1370,7 @@ async def orchestrate_message(
     agent_capability_result = await retrieve_agent_capabilities(
         db,
         session.company_id,
-        working_message,
+        routing_message,
     )
     _record_duration(timings_ms, "agent_capability_retrieval", agent_capability_started_at)
     capability_route_promotion_used = False
@@ -1380,7 +1384,7 @@ async def orchestrate_message(
     )
 
     classification_message = _build_classification_message(
-        working_message,
+        routing_message,
         attachment_names=attachment_names,
     )
     intent = classify_intent(classification_message, classifier_overrides)
@@ -1390,7 +1394,7 @@ async def orchestrate_message(
     if _should_refine_with_attachment_preview(intent, extracted_attachment_text):
         used_attachment_preview = True
         provider_input_message = _build_classification_message(
-            working_message,
+            routing_message,
             attachment_names=attachment_names,
             attachment_preview=extracted_attachment_text,
         )
@@ -1672,17 +1676,21 @@ async def orchestrate_message(
 
     hr_result = None
     company_result = None
+    company_agent_message = (
+        routing_message if conversation_grounding.get("used") else agent_message
+    )
 
     if route == AgentRoute.MIXED and isinstance(db, AsyncSession):
         mixed_started_at = perf_counter()
         hr_result, company_result = await asyncio.gather(
             _run_hr_data_agent_isolated(
                 session,
-                working_message,
+                agent_message,
                 intent.primary_intent,
                 intent.secondary_intents,
+                payload.conversation_history,
             ),
-            _run_company_agent_isolated(session, working_message),
+            _run_company_agent_isolated(session, company_agent_message),
         )
         _record_duration(timings_ms, "mixed_agents_parallel", mixed_started_at)
         used_agents.extend(["hr-data-agent", "company-agent"])
@@ -1718,9 +1726,10 @@ async def orchestrate_message(
             hr_result = await run_hr_data_agent(
                 db,
                 session,
-                working_message,
+                agent_message,
                 intent.primary_intent,
                 intent.secondary_intents,
+                conversation_history=payload.conversation_history,
             )
             _record_duration(timings_ms, "hr_data_agent", hr_started_at)
             used_agents.append("hr-data-agent")
@@ -1740,7 +1749,7 @@ async def orchestrate_message(
 
         if route in {AgentRoute.COMPANY, AgentRoute.MIXED}:
             company_started_at = perf_counter()
-            company_result = await run_company_agent(db, session, working_message)
+            company_result = await run_company_agent(db, session, company_agent_message)
             _record_duration(timings_ms, "company_agent", company_started_at)
             used_agents.append("company-agent")
             trace.append(

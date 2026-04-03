@@ -10,19 +10,27 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.orchestrator import orchestrate_message
 from app.core.security import SessionContext
+from app.guardrails.config_loader import load_config as load_guardrail_config
+from app.guardrails.input_guard import check_input as guardrail_check_input
+from app.guardrails.output_guard import validate_output as guardrail_validate_output
 from app.models import (
     ActionExecutionRequest,
     ActionResponse,
     ActionListResponse,
     AgentRoute,
+    AgentTraceStep,
     ConversationCreateRequest,
+    ConversationIntent,
     ConversationMessageCreateRequest,
     ConversationMessageExchangeResponse,
     ConversationMessageResponse,
     ConversationMessageRole,
     ConversationResponse,
     ConversationUpdateRequest,
+    IntentAssessment,
     OrchestratorRequest,
+    OrchestratorResponse,
+    SensitivityAssessment,
 )
 from app.services.action_engine import (
     create_actions_from_rule_trigger,
@@ -30,8 +38,7 @@ from app.services.action_engine import (
     list_actions_for_conversation,
     should_auto_execute_action,
 )
-from shared import ConversationStatus
-from shared import RuleTrigger
+from shared import ConversationStatus, RuleTrigger, SensitivityLevel
 
 CONVERSATION_SELECT = """
 SELECT
@@ -493,6 +500,17 @@ async def create_conversation_message(
             detail="Closed conversations cannot accept new messages.",
         )
 
+    # ── Phase 5: Input Guard ──────────────────────────────────────────────────
+    guardrail_config = await load_guardrail_config(db, session.company_id)
+    input_result = await guardrail_check_input(
+        db,
+        message=payload.message,
+        session=session,
+        config=guardrail_config,
+        conversation_id=str(conversation_id),
+        action_type="messages",
+    )
+
     user_attachments = [attachment.model_dump(mode="json") for attachment in payload.attachments]
     prior_messages = await _list_conversation_messages(
         db,
@@ -510,15 +528,74 @@ async def create_conversation_message(
         metadata=payload.metadata,
     )
 
+    if input_result.blocked:
+        # Return safe guardrail response without invoking orchestrator
+        safe_content = input_result.safe_response or "Permintaan tidak dapat diproses."
+        assistant_message = await _insert_conversation_message(
+            db,
+            conversation_id=str(conversation_id),
+            company_id=session.company_id,
+            employee_id=session.employee_id,
+            role=ConversationMessageRole.ASSISTANT,
+            content=safe_content,
+            attachments=[],
+            metadata={"guardrail_triggered": True, "guardrail_event": input_result.event_type},
+        )
+        guardrail_orchestration = OrchestratorResponse(
+            route=AgentRoute.OUT_OF_SCOPE,
+            intent=IntentAssessment(
+                primary_intent=ConversationIntent.OUT_OF_SCOPE,
+                confidence=1.0,
+            ),
+            sensitivity=SensitivityAssessment(
+                level=SensitivityLevel.LOW,
+                rationale="Blocked by guardrail.",
+            ),
+            answer=safe_content,
+            trace=[
+                AgentTraceStep(
+                    agent="input-guard",
+                    status="used",
+                    detail=f"Blocked: {input_result.event_type}",
+                )
+            ],
+            context={"guardrail_triggered": True, "guardrail_event": input_result.event_type},
+        )
+        refreshed = await _get_conversation_or_404(db, conversation_id, session)
+        messages = await _list_conversation_messages(db, conversation_id, session.company_id)
+        refreshed = refreshed.model_copy(update={"messages": messages})
+        return ConversationMessageExchangeResponse(
+            conversation=refreshed,
+            user_message=user_message,
+            assistant_message=assistant_message,
+            orchestration=guardrail_orchestration,
+            triggered_actions=[],
+        )
+
+    # Use sanitized message if available
+    effective_message = input_result.sanitized_message or payload.message
+
     orchestration = await orchestrate_message(
         db,
         session,
         OrchestratorRequest(
-            message=payload.message,
+            message=effective_message,
             attachments=payload.attachments,
             conversation_history=_build_orchestrator_history(prior_messages),
         ),
     )
+
+    # ── Phase 5: Output Guard ─────────────────────────────────────────────────
+    output_result = await guardrail_validate_output(
+        db,
+        response=orchestration.answer,
+        session=session,
+        config=guardrail_config,
+        evidence=orchestration.evidence,
+        route_confidence=orchestration.intent.confidence,
+        conversation_id=str(conversation_id),
+    )
+    orchestration = orchestration.model_copy(update={"answer": output_result.response})
 
     triggered_actions: list[ActionResponse] = []
     auto_execution_issues: list[dict[str, object]] = []

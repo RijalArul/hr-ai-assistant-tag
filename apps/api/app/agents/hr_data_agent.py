@@ -139,6 +139,80 @@ def _resolve_relative_period(
     return None, None
 
 
+def _normalize_context_message(message: str) -> str:
+    return re.sub(r"\s+", " ", message.lower()).strip()
+
+
+def _should_inherit_conversation_context(message: str) -> bool:
+    lowered = _normalize_context_message(message)
+    referential_markers = [
+        "yang tadi",
+        "tadi",
+        "itu",
+        "tersebut",
+        "yang barusan",
+        "barusan",
+        "sebelumnya",
+        "yang itu",
+    ]
+    if any(marker in lowered for marker in referential_markers):
+        return True
+
+    informative_tokens = re.findall(r"[a-zA-Z0-9_]{3,}", lowered)
+    if len(informative_tokens) > 8:
+        return False
+
+    domain_signals = [
+        "gaji",
+        "salary",
+        "payroll",
+        "payslip",
+        "slip gaji",
+        "attendance",
+        "kehadiran",
+        "presensi",
+        "jam masuk",
+        "check in",
+        "check-in",
+        "cuti",
+        "leave",
+        "izin",
+        "profil",
+        "profile",
+        "atasan",
+        "manager",
+    ]
+    return not any(signal in lowered for signal in domain_signals)
+
+
+def _get_recent_user_message(
+    conversation_history: list[dict[str, str]] | None,
+) -> str | None:
+    if not conversation_history:
+        return None
+
+    for item in reversed(conversation_history):
+        role = str(item.get("role", "")).strip().lower()
+        content = str(item.get("content", "")).strip()
+        if role == "user" and content:
+            return content
+    return None
+
+
+def _build_contextual_message(
+    message: str,
+    conversation_history: list[dict[str, str]] | None,
+) -> tuple[str, str | None]:
+    if not _should_inherit_conversation_context(message):
+        return message, None
+
+    recent_user_message = _get_recent_user_message(conversation_history)
+    if recent_user_message is None:
+        return message, None
+
+    return f"{recent_user_message}\n{message}", recent_user_message
+
+
 def _wants_latest_relevant_period(message: str) -> bool:
     lowered = message.lower()
     return any(
@@ -226,6 +300,23 @@ def _wants_average_check_in(message: str) -> bool:
     return mentions_check_in and mentions_average
 
 
+def _wants_average_check_in_with_context(
+    message: str,
+    contextual_message: str,
+    inherited_user_message: str | None,
+) -> bool:
+    if _wants_average_check_in(message):
+        return True
+    if inherited_user_message is None:
+        return False
+
+    lowered = message.lower()
+    follow_up_markers = ["rata", "rata-rata", "average", "avg", "jam berapa"]
+    return any(marker in lowered for marker in follow_up_markers) and _wants_average_check_in(
+        contextual_message
+    )
+
+
 def _time_to_minutes(value: Any) -> int | None:
     if value is None:
         return None
@@ -277,6 +368,32 @@ def _wants_payroll_delta_explanation(message: str) -> bool:
         ]
     )
     return mentions_payroll and mentions_delta
+
+
+def _wants_payroll_delta_explanation_with_context(
+    message: str,
+    contextual_message: str,
+    inherited_user_message: str | None,
+) -> bool:
+    if _wants_payroll_delta_explanation(message):
+        return True
+    if inherited_user_message is None:
+        return False
+
+    lowered = message.lower()
+    follow_up_markers = [
+        "kenapa",
+        "mengapa",
+        "why",
+        "lebih rendah",
+        "lebih kecil",
+        "lower",
+        "drop",
+        "turun",
+    ]
+    return any(marker in lowered for marker in follow_up_markers) and (
+        _wants_payroll_delta_explanation(contextual_message)
+    )
 
 
 def _serialize_row(row: dict[str, Any]) -> dict[str, Any]:
@@ -822,23 +939,66 @@ async def run_hr_data_agent(
     message: str,
     primary_intent: ConversationIntent,
     secondary_intents: list[ConversationIntent] | None = None,
+    *,
+    conversation_history: list[dict[str, str]] | None = None,
 ) -> HRDataAgentResult:
     secondary_intents = secondary_intents or []
     current_now = datetime.now(UTC)
+    contextual_message, inherited_user_message = _build_contextual_message(
+        message,
+        conversation_history,
+    )
     explicit_month = _extract_month(message)
     explicit_year = _extract_year(message)
     relative_month, relative_year = _resolve_relative_period(message, now=current_now)
-    wants_average_check_in = _wants_average_check_in(message)
-    wants_payroll_delta_explanation = _wants_payroll_delta_explanation(message)
+    inherited_month = (
+        _extract_month(inherited_user_message) if inherited_user_message else None
+    )
+    inherited_year = (
+        _extract_year(inherited_user_message) if inherited_user_message else None
+    )
+    inherited_relative_month, inherited_relative_year = (
+        _resolve_relative_period(inherited_user_message, now=current_now)
+        if inherited_user_message
+        else (None, None)
+    )
+    wants_average_check_in = _wants_average_check_in_with_context(
+        message,
+        contextual_message,
+        inherited_user_message,
+    )
+    wants_payroll_delta_explanation = _wants_payroll_delta_explanation_with_context(
+        message,
+        contextual_message,
+        inherited_user_message,
+    )
     wants_latest_relevant_period = _wants_latest_relevant_period(message)
     rolling_window_days = 30 if _wants_rolling_30_day_window(message) else None
 
-    month = explicit_month or relative_month
+    month = explicit_month or relative_month or inherited_month or inherited_relative_month
     current_year = current_now.year
-    year = explicit_year or relative_year or current_year
-    payroll_year_filter = explicit_year or relative_year or (current_year if month is not None else None)
-    attendance_year_filter = explicit_year or relative_year or (current_year if month is not None else None)
-    topics = _resolve_topics(message, primary_intent, secondary_intents)
+    year = (
+        explicit_year
+        or relative_year
+        or inherited_year
+        or inherited_relative_year
+        or current_year
+    )
+    payroll_year_filter = (
+        explicit_year
+        or relative_year
+        or inherited_year
+        or inherited_relative_year
+        or (current_year if month is not None else None)
+    )
+    attendance_year_filter = (
+        explicit_year
+        or relative_year
+        or inherited_year
+        or inherited_relative_year
+        or (current_year if month is not None else None)
+    )
+    topics = _resolve_topics(contextual_message, primary_intent, secondary_intents)
 
     summary_parts: list[str] = []
     evidence: list[EvidenceItem] = []
