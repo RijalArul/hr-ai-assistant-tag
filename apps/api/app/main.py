@@ -7,6 +7,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.routes.actions import router as actions_router
 from app.api.routes.auth import router as auth_router
 from app.api.routes.conversations import router as conversations_router
+from app.api.routes.guardrails import router as guardrails_router
+from app.api.routes.openai_compat import router as openai_compat_router
 from app.api.routes.rules import router as rules_router
 from app.api.routes.webhooks import router as webhooks_router
 from app.core.config import get_settings
@@ -29,13 +31,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
 app = FastAPI(
     title="HR.ai API",
-    version="0.1.0",
+    version="0.6.0",
     description=(
-        "HR.ai API currently includes Phase 1 trust-boundary foundations, "
-        "Phase 2 action-engine surfaces for actions, rules, and webhooks, "
-        "and a Phase 4 conversations API that invokes the internal Phase 3 "
-        "orchestrator. Interactive docs are available at `/docs`, and the "
-        "OpenAPI schema is available at `/openapi.json` for Postman import."
+        "HR.ai API — Phase 1 (auth/trust), Phase 2 (action engine), "
+        "Phase 3 (AI orchestrator), Phase 4 (conversations), "
+        "Phase 5 (guardrail layer: rate limiting, injection detection, "
+        "PII scanning, hallucination checking, audit logs), "
+        "Phase 6 (OpenAI-compatible endpoint at /v1/chat/completions). "
+        "Interactive docs at `/docs`, OpenAPI at `/openapi.json`."
     ),
     docs_url="/docs" if not settings.is_production else None,
     redoc_url=None,
@@ -56,3 +59,5 @@ app.include_router(conversations_router, prefix=API_PREFIX)
 app.include_router(actions_router, prefix=API_PREFIX)
 app.include_router(rules_router, prefix=API_PREFIX)
 app.include_router(webhooks_router, prefix=API_PREFIX)
+app.include_router(guardrails_router, prefix=API_PREFIX)
+app.include_router(openai_compat_router, prefix="/v1")
