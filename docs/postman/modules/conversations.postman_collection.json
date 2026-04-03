@@ -1,0 +1,700 @@
+{
+  "info": {
+    "_postman_id": "5d5d4b1e-0b70-4f86-92ea-8dd67e3f5001",
+    "name": "HR.ai - Conversations Module",
+    "description": "Module-level Postman collection for Phase 4 conversations API. Includes employee login helper plus practical smoke-test scenarios for mixed routing, sensitivity handling, attachment-assisted routing, conversation patching, and linked action lookup.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8000/api/v1"
+    },
+    {
+      "key": "employeeEmail",
+      "value": "fakhrul.rijal@majubersama.id"
+    },
+    {
+      "key": "hrAdminEmail",
+      "value": "siti.rahayu@majubersama.id"
+    },
+    {
+      "key": "bearerToken",
+      "value": ""
+    },
+    {
+      "key": "conversationId",
+      "value": ""
+    },
+    {
+      "key": "sensitiveConversationId",
+      "value": ""
+    },
+    {
+      "key": "attachmentConversationId",
+      "value": ""
+    },
+    {
+      "key": "payslipConversationId",
+      "value": ""
+    },
+    {
+      "key": "seedConversationId",
+      "value": "be45c0d1-f203-4142-9faa-bccddeef0b01"
+    },
+    {
+      "key": "seedSensitiveConversationId",
+      "value": "cf56d1e2-034a-4253-8abb-cddeef0a1c02"
+    },
+    {
+      "key": "seedFollowupConversationId",
+      "value": "d067e2f3-145b-4364-9bcc-ddeef0a1b203"
+    }
+  ],
+  "item": [
+    {
+      "name": "Login Employee Helper",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/auth/login",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "auth",
+            "login"
+          ]
+        },
+        "description": "Login as the seeded employee user and store the returned JWT in `bearerToken` for the requests below.",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"email\": \"{{employeeEmail}}\"\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('login succeeded', function () {",
+              "  pm.response.to.have.status(200);",
+              "});",
+              "const body = pm.response.json();",
+              "if (body.access_token) {",
+              "  pm.collectionVariables.set('bearerToken', body.access_token);",
+              "}"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Create Conversation",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{bearerToken}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/conversations",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "conversations"
+          ]
+        },
+        "description": "Create a fresh conversation for the main smoke-test path and store the returned id in `conversationId`.",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"title\": \"Phase 4 smoke test conversation\",\n  \"metadata\": {\n    \"source\": \"postman\",\n    \"test_case\": \"phase4_smoke\"\n  }\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('conversation created', function () {",
+              "  pm.response.to.have.status(201);",
+              "});",
+              "const body = pm.response.json();",
+              "if (body.id) {",
+              "  pm.collectionVariables.set('conversationId', body.id);",
+              "}"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Post Mixed Message",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{bearerToken}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/conversations/{{conversationId}}/messages",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "conversations",
+            "{{conversationId}}",
+            "messages"
+          ]
+        },
+        "description": "Smoke-test the main Phase 3 routing path through the public Phase 4 API. Expected route: `mixed`.",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"message\": \"Berapa sisa cuti saya tahun ini dan apa aturan carry over?\",\n  \"attachments\": [],\n  \"metadata\": {\n    \"channel\": \"postman\"\n  }\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('mixed message succeeded', function () {",
+              "  pm.response.to.have.status(200);",
+              "});",
+              "const body = pm.response.json();",
+              "pm.test('route is mixed', function () {",
+              "  pm.expect(body.orchestration.route).to.eql('mixed');",
+              "});",
+              "pm.test('conversation stays active', function () {",
+              "  pm.expect(body.conversation.status).to.eql('active');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Get Conversation Detail",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{bearerToken}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/conversations/{{conversationId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "conversations",
+            "{{conversationId}}"
+          ]
+        },
+        "description": "Read back the current conversation and message history after posting a mixed HR/company question."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('conversation detail returned', function () {",
+              "  pm.response.to.have.status(200);",
+              "});",
+              "const body = pm.response.json();",
+              "pm.test('messages exist', function () {",
+              "  pm.expect(body.messages.length).to.be.greaterThan(0);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Get Conversation Actions",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{bearerToken}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/conversations/{{conversationId}}/actions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "conversations",
+            "{{conversationId}}",
+            "actions"
+          ]
+        },
+        "description": "List actions linked to the conversation. For a fresh smoke-test conversation this may legitimately return `total = 0` unless action automation has created a linked record."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('conversation actions returned', function () {",
+              "  pm.response.to.have.status(200);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Create Payslip Test Conversation",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{bearerToken}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/conversations",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "conversations"
+          ]
+        },
+        "description": "Create a fresh conversation for the self-service payslip generation flow and store the returned id in `payslipConversationId`.",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"title\": \"Payslip generation conversation\",\n  \"metadata\": {\n    \"source\": \"postman\",\n    \"test_case\": \"payslip_generation\"\n  }\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('payslip conversation created', function () {",
+              "  pm.response.to.have.status(201);",
+              "});",
+              "const body = pm.response.json();",
+              "if (body.id) {",
+              "  pm.collectionVariables.set('payslipConversationId', body.id);",
+              "}"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Post Payslip PDF Request",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{bearerToken}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/conversations/{{payslipConversationId}}/messages",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "conversations",
+            "{{payslipConversationId}}",
+            "messages"
+          ]
+        },
+        "description": "Trigger payroll document automation. Expected result: one completed `document_generation` action with a generated payslip PDF in `triggered_actions[0].execution_result.document`.",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"message\": \"Bisakah kamu tolong generate pdf, payslip saya?\",\n  \"attachments\": [],\n  \"metadata\": {\n    \"channel\": \"postman\"\n  }\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('payslip request succeeded', function () {",
+              "  pm.response.to.have.status(200);",
+              "});",
+              "const body = pm.response.json();",
+              "pm.test('intent is payroll_document_request', function () {",
+              "  pm.expect(body.orchestration.intent.primary_intent).to.eql('payroll_document_request');",
+              "});",
+              "pm.test('one triggered action exists', function () {",
+              "  pm.expect(body.triggered_actions.length).to.eql(1);",
+              "});",
+              "pm.test('generated document is a pdf', function () {",
+              "  pm.expect(body.triggered_actions[0].execution_result.document.mime_type).to.eql('application/pdf');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Patch Conversation Title",
+      "request": {
+        "method": "PATCH",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{bearerToken}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/conversations/{{conversationId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "conversations",
+            "{{conversationId}}"
+          ]
+        },
+        "description": "Employee is allowed to patch conversation title and metadata.",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"title\": \"Phase 4 smoke test conversation (renamed)\",\n  \"metadata\": {\n    \"source\": \"postman\",\n    \"patched\": true\n  }\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('conversation patched', function () {",
+              "  pm.response.to.have.status(200);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Patch Conversation To Escalated (Expect 403)",
+      "request": {
+        "method": "PATCH",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{bearerToken}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/conversations/{{conversationId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "conversations",
+            "{{conversationId}}"
+          ]
+        },
+        "description": "Negative test: employee should not be able to manually set a conversation to `escalated`.",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"status\": \"escalated\"\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('manual escalation is forbidden', function () {",
+              "  pm.response.to.have.status(403);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Create Sensitive Test Conversation",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{bearerToken}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/conversations",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "conversations"
+          ]
+        },
+        "description": "Create a fresh conversation for the sensitivity flow and store the returned id in `sensitiveConversationId`.",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"title\": \"Sensitive route test conversation\",\n  \"metadata\": {\n    \"source\": \"postman\",\n    \"test_case\": \"sensitive_route\"\n  }\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('sensitive test conversation created', function () {",
+              "  pm.response.to.have.status(201);",
+              "});",
+              "const body = pm.response.json();",
+              "if (body.id) {",
+              "  pm.collectionVariables.set('sensitiveConversationId', body.id);",
+              "}"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Post Sensitive Message",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{bearerToken}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/conversations/{{sensitiveConversationId}}/messages",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "conversations",
+            "{{sensitiveConversationId}}",
+            "messages"
+          ]
+        },
+        "description": "Smoke-test the sensitive redirect path through the public conversations API. Expected route: `sensitive_redirect` and conversation status `escalated`.",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"message\": \"Saya merasa dibully dan mengalami pelecehan di kantor.\",\n  \"attachments\": [],\n  \"metadata\": {\n    \"channel\": \"postman\"\n  }\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('sensitive message succeeded', function () {",
+              "  pm.response.to.have.status(200);",
+              "});",
+              "const body = pm.response.json();",
+              "pm.test('route is sensitive_redirect', function () {",
+              "  pm.expect(body.orchestration.route).to.eql('sensitive_redirect');",
+              "});",
+              "pm.test('conversation is escalated', function () {",
+              "  pm.expect(body.conversation.status).to.eql('escalated');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Create Attachment Test Conversation",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{bearerToken}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/conversations",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "conversations"
+          ]
+        },
+        "description": "Create a fresh conversation for the attachment-assisted policy lookup scenario and store the returned id in `attachmentConversationId`.",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"title\": \"Attachment policy test conversation\",\n  \"metadata\": {\n    \"source\": \"postman\",\n    \"test_case\": \"attachment_policy\"\n  }\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('attachment test conversation created', function () {",
+              "  pm.response.to.have.status(201);",
+              "});",
+              "const body = pm.response.json();",
+              "if (body.id) {",
+              "  pm.collectionVariables.set('attachmentConversationId', body.id);",
+              "}"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Post Attachment Policy Message",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{bearerToken}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/conversations/{{attachmentConversationId}}/messages",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "conversations",
+            "{{attachmentConversationId}}",
+            "messages"
+          ]
+        },
+        "description": "Smoke-test attachment-assisted routing using inline text to avoid local file-path dependence inside Postman.",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"message\": \"Tolong cek lampiran ini\",\n  \"attachments\": [\n    {\n      \"file_name\": \"carry-over-policy.txt\",\n      \"inline_text\": \"Aturan carry over cuti maksimal 5 hari sampai akhir kuartal pertama.\"\n    }\n  ],\n  \"metadata\": {\n    \"channel\": \"postman\"\n  }\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('attachment message succeeded', function () {",
+              "  pm.response.to.have.status(200);",
+              "});",
+              "const body = pm.response.json();",
+              "pm.test('route is company or mixed', function () {",
+              "  pm.expect(['company', 'mixed']).to.include(body.orchestration.route);",
+              "});",
+              "pm.test('file-agent was used', function () {",
+              "  pm.expect(body.orchestration.used_agents).to.include('file-agent');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Read Seeded Payroll Conversation",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{bearerToken}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/conversations/{{seedConversationId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "conversations",
+            "{{seedConversationId}}"
+          ]
+        },
+        "description": "Read the seeded payroll conversation directly as a quick regression/sanity check against known seeded data."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('seeded conversation returned', function () {",
+              "  pm.response.to.have.status(200);",
+              "});"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

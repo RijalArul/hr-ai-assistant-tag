@@ -85,3 +85,15 @@ async def get_current_session(
         raise _credentials_exception()
 
     return decode_access_token(credentials.credentials)
+
+
+def require_session_roles(
+    session: SessionContext,
+    allowed_roles: set[str],
+) -> SessionContext:
+    if session.role not in allowed_roles:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You do not have permission to access this resource.",
+        )
+    return session

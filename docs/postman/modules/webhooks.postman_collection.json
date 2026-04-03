@@ -1,0 +1,477 @@
+{
+  "info": {
+    "_postman_id": "29cd3604-a699-4fd3-9138-6338bc417003",
+    "name": "HR.ai - Webhooks Module",
+    "description": "Module-level Postman collection for webhook registration and maintenance.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8000/api/v1"
+    },
+    {
+      "key": "bearerToken",
+      "value": ""
+    },
+    {
+      "key": "webhookId",
+      "value": "ad34bfc0-e1f2-4031-8e9f-abbccddeea01"
+    }
+  ],
+  "item": [
+    {
+      "name": "List Webhooks",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{bearerToken}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/webhooks",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "webhooks"
+          ]
+        },
+        "description": "List webhook registrations. Requires IT Admin."
+      },
+      "response": [
+        {
+          "name": "200 OK - Webhook List",
+          "originalRequest": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/webhooks",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "webhooks"
+              ]
+            }
+          },
+          "status": "OK",
+          "code": 200,
+          "_postman_previewlanguage": "json",
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": "{\n  \"items\": [],\n  \"total\": 0\n}"
+        },
+        {
+          "name": "403 Forbidden - HR Admin Cannot Read",
+          "originalRequest": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/webhooks",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "webhooks"
+              ]
+            }
+          },
+          "status": "Forbidden",
+          "code": 403,
+          "_postman_previewlanguage": "json",
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": "{\n  \"detail\": \"You do not have permission to access this resource.\"\n}"
+        }
+      ]
+    },
+    {
+      "name": "Get Webhook",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{bearerToken}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/webhooks/{{webhookId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "webhooks",
+            "{{webhookId}}"
+          ]
+        },
+        "description": "Get one webhook registration. Requires IT Admin."
+      },
+      "response": [
+        {
+          "name": "200 OK - Webhook Detail",
+          "originalRequest": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/webhooks/{{webhookId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "webhooks",
+                "{{webhookId}}"
+              ]
+            }
+          },
+          "status": "OK",
+          "code": 200,
+          "_postman_previewlanguage": "json",
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": "{\n  \"id\": \"60000000-0000-0000-0000-000000000001\",\n  \"name\": \"Primary HRIS webhook\",\n  \"target_url\": \"https://example.com/webhooks/hr-ai\",\n  \"subscribed_events\": [\n    \"action.created\",\n    \"action.delivery_requested\"\n  ],\n  \"secret_preview\": \"supe...-key\",\n  \"is_active\": true\n}"
+        },
+        {
+          "name": "404 Not Found - Unknown Webhook",
+          "originalRequest": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/webhooks/{{webhookId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "webhooks",
+                "{{webhookId}}"
+              ]
+            }
+          },
+          "status": "Not Found",
+          "code": 404,
+          "_postman_previewlanguage": "json",
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": "{\n  \"detail\": \"Webhook not found.\"\n}"
+        }
+      ]
+    },
+    {
+      "name": "Create Webhook",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{bearerToken}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/webhooks",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "webhooks"
+          ]
+        },
+        "description": "Create one webhook registration and store the signing secret. Requires IT Admin.",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"name\": \"Primary HRIS webhook\",\n  \"target_url\": \"https://example.com/webhooks/hr-ai\",\n  \"subscribed_events\": [\n    \"action.created\",\n    \"action.delivery_requested\"\n  ],\n  \"secret\": \"super-secret-signing-key\",\n  \"is_active\": true\n}"
+        }
+      },
+      "response": [
+        {
+          "name": "201 Created - Webhook Created",
+          "originalRequest": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer <it-admin-jwt>"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/webhooks",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "webhooks"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Primary HRIS webhook\",\n  \"target_url\": \"https://example.com/webhooks/hr-ai\",\n  \"subscribed_events\": [\n    \"action.created\",\n    \"action.delivery_requested\"\n  ],\n  \"secret\": \"super-secret-signing-key\",\n  \"is_active\": true\n}"
+            }
+          },
+          "status": "Created",
+          "code": 201,
+          "_postman_previewlanguage": "json",
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": "{\n  \"id\": \"60000000-0000-0000-0000-000000000001\",\n  \"name\": \"Primary HRIS webhook\",\n  \"secret_preview\": \"supe...-key\",\n  \"is_active\": true\n}"
+        },
+        {
+          "name": "403 Forbidden - HR Admin Cannot Create",
+          "originalRequest": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/webhooks",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "webhooks"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Primary HRIS webhook\"\n}"
+            }
+          },
+          "status": "Forbidden",
+          "code": 403,
+          "_postman_previewlanguage": "json",
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": "{\n  \"detail\": \"You do not have permission to access this resource.\"\n}"
+        }
+      ],
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.response.code === 201) {",
+              "  const body = pm.response.json();",
+              "  if (body.id) { pm.collectionVariables.set(\"webhookId\", body.id); }",
+              "}"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Update Webhook",
+      "request": {
+        "method": "PATCH",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{bearerToken}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/webhooks/{{webhookId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "webhooks",
+            "{{webhookId}}"
+          ]
+        },
+        "description": "Update one webhook registration. Requires IT Admin.",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"is_active\": false\n}"
+        }
+      },
+      "response": [
+        {
+          "name": "200 OK - Webhook Updated",
+          "originalRequest": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer <it-admin-jwt>"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/webhooks/{{webhookId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "webhooks",
+                "{{webhookId}}"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"is_active\": false\n}"
+            }
+          },
+          "status": "OK",
+          "code": 200,
+          "_postman_previewlanguage": "json",
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": "{\n  \"id\": \"60000000-0000-0000-0000-000000000001\",\n  \"is_active\": false\n}"
+        },
+        {
+          "name": "403 Forbidden - HR Admin Cannot Update",
+          "originalRequest": {
+            "method": "PATCH",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/webhooks/{{webhookId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "webhooks",
+                "{{webhookId}}"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"is_active\": false\n}"
+            }
+          },
+          "status": "Forbidden",
+          "code": 403,
+          "_postman_previewlanguage": "json",
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": "{\n  \"detail\": \"You do not have permission to access this resource.\"\n}"
+        }
+      ]
+    },
+    {
+      "name": "Delete Webhook",
+      "request": {
+        "method": "DELETE",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{bearerToken}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/webhooks/{{webhookId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "webhooks",
+            "{{webhookId}}"
+          ]
+        },
+        "description": "Delete one webhook registration. Requires IT Admin."
+      },
+      "response": [
+        {
+          "name": "204 No Content - Webhook Deleted",
+          "originalRequest": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/webhooks/{{webhookId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "webhooks",
+                "{{webhookId}}"
+              ]
+            }
+          },
+          "status": "No Content",
+          "code": 204,
+          "_postman_previewlanguage": "json",
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": ""
+        },
+        {
+          "name": "403 Forbidden - HR Admin Cannot Delete",
+          "originalRequest": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/webhooks/{{webhookId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "webhooks",
+                "{{webhookId}}"
+              ]
+            }
+          },
+          "status": "Forbidden",
+          "code": 403,
+          "_postman_previewlanguage": "json",
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": "{\n  \"detail\": \"You do not have permission to access this resource.\"\n}"
+        }
+      ]
+    }
+  ]
+}

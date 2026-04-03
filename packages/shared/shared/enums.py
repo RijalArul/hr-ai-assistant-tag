@@ -54,6 +54,22 @@ class ActionType(StrEnum):
     CUSTOM_WEBHOOK = "custom_webhook"
 
 
+class ActionStatus(StrEnum):
+    PENDING = "pending"
+    READY = "ready"
+    IN_PROGRESS = "in_progress"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class ActionPriority(StrEnum):
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    URGENT = "urgent"
+
+
 class ConversationStatus(StrEnum):
     ACTIVE = "active"
     RESOLVED = "resolved"
@@ -72,3 +88,16 @@ class DeliveryChannel(StrEnum):
     WEBHOOK = "webhook"
     IN_APP = "in_app"
     MANUAL_REVIEW = "manual_review"
+
+
+class RuleTrigger(StrEnum):
+    CONVERSATION_RESOLVED = "conversation_resolved"
+    SENSITIVITY_DETECTED = "sensitivity_detected"
+    ACTION_EXECUTION_COMPLETED = "action_execution_completed"
+
+
+class WebhookEvent(StrEnum):
+    ACTION_CREATED = "action.created"
+    ACTION_UPDATED = "action.updated"
+    ACTION_EXECUTED = "action.executed"
+    ACTION_DELIVERY_REQUESTED = "action.delivery_requested"

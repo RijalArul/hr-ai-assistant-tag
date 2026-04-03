@@ -11,6 +11,7 @@ langchain-community>=0.3
 # Database
 sqlalchemy>=2.0
 asyncpg>=0.29
+psycopg2-binary>=2.9
 
 # Redis
 redis>=5.0
@@ -23,13 +24,13 @@ passlib[bcrypt]>=1.7
 pydantic-settings>=2.5
 
 # LLM clients
+google-genai>=1.0
 google-generativeai>=0.8
 langchain-google-genai>=2.0
-
-# Embeddings
-sentence-transformers>=3.0
-langchain-huggingface>=0.1
 
 # File extraction
 pypdf>=5.0
 pillow>=10.0
+
+# Object storage
+boto3>=1.35

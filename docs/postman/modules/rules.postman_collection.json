@@ -1,0 +1,477 @@
+{
+  "info": {
+    "_postman_id": "9c45c6ba-bc4a-48f6-9625-2db6b68e4f02",
+    "name": "HR.ai - Rules Module",
+    "description": "Module-level Postman collection for rule configuration and HR Admin enable/disable flow.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8000/api/v1"
+    },
+    {
+      "key": "bearerToken",
+      "value": ""
+    },
+    {
+      "key": "ruleId",
+      "value": "6f907b8c-adbe-4cfd-8a5b-6c7d8e9fa701"
+    }
+  ],
+  "item": [
+    {
+      "name": "List Rules",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{bearerToken}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/rules",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "rules"
+          ]
+        },
+        "description": "List action-generation rules. Requires HR Admin or IT Admin."
+      },
+      "response": [
+        {
+          "name": "200 OK - Rule List",
+          "originalRequest": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/rules",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "rules"
+              ]
+            }
+          },
+          "status": "OK",
+          "code": 200,
+          "_postman_previewlanguage": "json",
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": "{\n  \"items\": [],\n  \"total\": 0\n}"
+        },
+        {
+          "name": "403 Forbidden - Employee Token",
+          "originalRequest": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/rules",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "rules"
+              ]
+            }
+          },
+          "status": "Forbidden",
+          "code": 403,
+          "_postman_previewlanguage": "json",
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": "{\n  \"detail\": \"You do not have permission to access this resource.\"\n}"
+        }
+      ]
+    },
+    {
+      "name": "Get Rule",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{bearerToken}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/rules/{{ruleId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "rules",
+            "{{ruleId}}"
+          ]
+        },
+        "description": "Get one rule and its action templates."
+      },
+      "response": [
+        {
+          "name": "200 OK - Rule Detail",
+          "originalRequest": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/rules/{{ruleId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "rules",
+                "{{ruleId}}"
+              ]
+            }
+          },
+          "status": "OK",
+          "code": 200,
+          "_postman_previewlanguage": "json",
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": "{\n  \"id\": \"70000000-0000-0000-0000-000000000001\",\n  \"company_id\": \"00000000-0000-0000-0000-000000000001\",\n  \"name\": \"Payroll document follow-up\",\n  \"description\": \"Generate a salary slip when the payroll request intent is resolved.\",\n  \"trigger\": \"conversation_resolved\",\n  \"intent_key\": \"payroll_document_request\",\n  \"sensitivity_threshold\": \"medium\",\n  \"is_enabled\": true,\n  \"actions\": [\n    {\n      \"action_type\": \"document_generation\",\n      \"title_template\": \"Generate salary slip\",\n      \"summary_template\": \"Prepare payroll document for delivery.\",\n      \"priority\": \"medium\",\n      \"delivery_channels\": [\n        \"email\",\n        \"in_app\"\n      ],\n      \"payload_template\": {\n        \"document_type\": \"salary_slip\"\n      }\n    }\n  ],\n  \"created_at\": \"2026-04-03T10:25:00Z\",\n  \"updated_at\": \"2026-04-03T10:25:00Z\"\n}"
+        },
+        {
+          "name": "404 Not Found - Unknown Rule",
+          "originalRequest": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/rules/{{ruleId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "rules",
+                "{{ruleId}}"
+              ]
+            }
+          },
+          "status": "Not Found",
+          "code": 404,
+          "_postman_previewlanguage": "json",
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": "{\n  \"detail\": \"Rule not found.\"\n}"
+        }
+      ]
+    },
+    {
+      "name": "Create Rule",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{bearerToken}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/rules",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "rules"
+          ]
+        },
+        "description": "Create one rule and its mapped action templates. Requires IT Admin.",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"name\": \"Payroll document follow-up\",\n  \"description\": \"Generate a salary slip when the payroll request intent is resolved.\",\n  \"trigger\": \"conversation_resolved\",\n  \"intent_key\": \"payroll_document_request\",\n  \"sensitivity_threshold\": \"medium\",\n  \"is_enabled\": true,\n  \"actions\": [\n    {\n      \"action_type\": \"document_generation\",\n      \"title_template\": \"Generate salary slip\",\n      \"summary_template\": \"Prepare payroll document for delivery.\",\n      \"priority\": \"medium\",\n      \"delivery_channels\": [\n        \"email\",\n        \"in_app\"\n      ],\n      \"payload_template\": {\n        \"document_type\": \"salary_slip\",\n        \"template_key\": \"payroll_salary_slip_v1\"\n      }\n    }\n  ]\n}"
+        }
+      },
+      "response": [
+        {
+          "name": "201 Created - Rule Created",
+          "originalRequest": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer <it-admin-jwt>"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/rules",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "rules"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Payroll document follow-up\"\n}"
+            }
+          },
+          "status": "Created",
+          "code": 201,
+          "_postman_previewlanguage": "json",
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": "{\n  \"id\": \"70000000-0000-0000-0000-000000000001\",\n  \"name\": \"Payroll document follow-up\",\n  \"is_enabled\": true\n}"
+        },
+        {
+          "name": "403 Forbidden - HR Admin Cannot Create",
+          "originalRequest": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/rules",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "rules"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Payroll document follow-up\"\n}"
+            }
+          },
+          "status": "Forbidden",
+          "code": 403,
+          "_postman_previewlanguage": "json",
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": "{\n  \"detail\": \"You do not have permission to access this resource.\"\n}"
+        }
+      ],
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.response.code === 201) {",
+              "  const body = pm.response.json();",
+              "  if (body.id) { pm.collectionVariables.set(\"ruleId\", body.id); }",
+              "}"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Toggle Rule",
+      "request": {
+        "method": "PATCH",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{bearerToken}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/rules/{{ruleId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "rules",
+            "{{ruleId}}"
+          ]
+        },
+        "description": "Toggle one rule using HR Admin or update full configuration using IT Admin.",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"is_enabled\": false\n}"
+        }
+      },
+      "response": [
+        {
+          "name": "200 OK - Rule Toggled",
+          "originalRequest": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer <hr-admin-jwt>"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/rules/{{ruleId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "rules",
+                "{{ruleId}}"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"is_enabled\": false\n}"
+            }
+          },
+          "status": "OK",
+          "code": 200,
+          "_postman_previewlanguage": "json",
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": "{\n  \"id\": \"70000000-0000-0000-0000-000000000001\",\n  \"is_enabled\": false\n}"
+        },
+        {
+          "name": "403 Forbidden - HR Admin Template Change",
+          "originalRequest": {
+            "method": "PATCH",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/rules/{{ruleId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "rules",
+                "{{ruleId}}"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"intent_key\": \"new_intent\"\n}"
+            }
+          },
+          "status": "Forbidden",
+          "code": 403,
+          "_postman_previewlanguage": "json",
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": "{\n  \"detail\": \"HR Admin can only toggle `is_enabled`. Rule template changes must be performed by IT Admin.\"\n}"
+        }
+      ]
+    },
+    {
+      "name": "Delete Rule",
+      "request": {
+        "method": "DELETE",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{bearerToken}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/rules/{{ruleId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "rules",
+            "{{ruleId}}"
+          ]
+        },
+        "description": "Delete one rule and its action mappings. Requires IT Admin."
+      },
+      "response": [
+        {
+          "name": "204 No Content - Rule Deleted",
+          "originalRequest": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/rules/{{ruleId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "rules",
+                "{{ruleId}}"
+              ]
+            }
+          },
+          "status": "No Content",
+          "code": 204,
+          "_postman_previewlanguage": "json",
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": ""
+        },
+        {
+          "name": "403 Forbidden - HR Admin Cannot Delete",
+          "originalRequest": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/rules/{{ruleId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "rules",
+                "{{ruleId}}"
+              ]
+            }
+          },
+          "status": "Forbidden",
+          "code": 403,
+          "_postman_previewlanguage": "json",
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": "{\n  \"detail\": \"You do not have permission to access this resource.\"\n}"
+        }
+      ]
+    }
+  ]
+}

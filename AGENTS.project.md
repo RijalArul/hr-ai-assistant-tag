@@ -6,7 +6,7 @@
 Project: HR.ai  
 Type: Conversational HR support platform with open API  
 Runtime shape: Python backend plus Discord bot, with web/admin UI and integrations  
-Current stack direction: FastAPI + LangChain Python + discord.py + Supabase PostgreSQL + pgvector + Upstash Redis + Next.js  
+Current stack direction: FastAPI + custom orchestration/services + discord.py + Supabase PostgreSQL + pgvector + hosted Gemini embeddings + Upstash Redis + Next.js + S3-compatible document storage  
 Deployment direction: Railway for Python runtime, Netlify for Next.js  
 
 Core product goal:
@@ -43,6 +43,8 @@ The project should stay aligned with these product areas:
 Owns:
 - intent classification
 - sensitivity detection
+- semantic intent retrieval
+- semantic `agent_capabilities` retrieval
 - message orchestration
 - trusted retrieval/tool routing
 - final answer synthesis
@@ -54,6 +56,7 @@ Owns:
 - action status lifecycle
 - execution triggering
 - execution result tracking
+- generated document metadata and storage hand-off
 
 ### 3. API & Integration
 Owns:
@@ -115,6 +118,12 @@ Routing expectations:
 
 Do not make attachment parsing or company policy lookup behave like unrestricted generic reasoning.
 
+Current routing shape to preserve:
+- local heuristics remain the cheap first pass for obvious requests
+- semantic retrieval provides intent and agent candidates before escalating to the judge model
+- MiniMax is the current judge for ambiguous routing cases
+- `agent_capabilities` can promote a route only when the result still aligns with a safe intent
+
 ---
 
 ## Retrieval Rules
@@ -132,6 +141,7 @@ This project is intentionally hybrid, but not evenly hybrid.
 
 ### RAG path should mainly own:
 - `company_rules`
+- semantic routing examples and agent capability examples
 - long-form policy text
 - future FAQ / knowledge-base style content if added later
 
@@ -139,6 +149,7 @@ Rules:
 - do not replace structured retrieval with semantic retrieval just because it is easier
 - do not expose raw database semantics directly to model output
 - prefer deterministic data access for employee-specific records
+- do not treat semantic retrieval as permission to bypass trust boundaries
 
 ---
 
@@ -198,6 +209,7 @@ Protect:
 - sensitivity level shape
 - message payload shape
 - conversation response shape
+- `triggered_actions` response behavior when automation fires
 
 ### Actions
 Expected responsibilities:
@@ -212,6 +224,8 @@ Protect:
 - priority/status values
 - execution config shape
 - result access path
+- generated document metadata shape
+- object storage reference fields such as `bucket`, `object_key`, and signed URL fields
 
 ### Rules
 Expected responsibilities:
@@ -233,9 +247,14 @@ Expected responsibilities:
 - webhook
 - in_app
 - manual_review
+- generated document storage references when applicable
 
 Sensitive-case rule:
 manual review must remain the safe override when the product requires it.
+
+Document-generation rule:
+- low-risk self-service document flows may auto-execute when explicitly designed that way
+- object storage credentials must remain environment-only and never appear in docs, responses beyond intended metadata, or source-controlled examples
 
 ---
 
@@ -253,6 +272,7 @@ Required repository docs:
 - add or update markdown API docs under `docs/api/`
 - document, at minimum: route path, purpose, auth requirement, request body, success response, expected error responses, and status behavior
 - if docs locations change, keep `README.md` pointers aligned
+- if a response gains new operational fields such as `triggered_actions` or storage metadata, reflect them in markdown docs explicitly
 
 Required Postman docs:
 - add or update a module-level collection under `docs/postman/modules/`
@@ -260,6 +280,7 @@ Required Postman docs:
 - for each request, include example request payloads plus saved example responses for success and relevant error cases
 - keep shared variables or environments usable for local development
 - if a combined collection exists, keep it aligned with the module collections
+- if a route now creates linked actions or generated documents, include at least one realistic Postman scenario for that behavior
 
 Rule:
 - do not consider an API task complete if the route exists but the docs and Postman examples were not updated with it
@@ -407,6 +428,7 @@ Preferred validations:
 - webhook event emitted -> payload signed and shape preserved
 - rule disabled -> no action generated
 - rule enabled -> action generated as expected
+- payslip request -> linked `document_generation` action -> generated document reference returned
 - session-bound request -> no cross-employee leakage
 
 Tests are useful when branching or product rules become non-trivial.
