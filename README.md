@@ -288,6 +288,7 @@ The repository is no longer only a roadmap skeleton. The current implemented sta
 Known current MVP behavior:
 - `POST /conversations/{id}/messages` can create `triggered_actions` when a matching Phase 2 rule fires.
 - payslip requests can create and auto-execute a `document_generation` action when the request is low-risk.
+- exploratory payslip questions such as "how do I download/email my payslip?" stay in conversation mode until the user asks explicitly for execution.
 - generated payslip PDFs are stored in S3-compatible object storage when configured, with inline fallback retained as a safety path.
 
 ---
@@ -314,6 +315,7 @@ https://api.hr-ai.io/api/v1
 Notes:
 - `POST /conversations/{id}/messages` returns orchestration details and may also return `triggered_actions`.
 - for eligible `payroll_document_request` messages, the conversation flow can create and auto-execute a linked payslip action.
+- short referential follow-ups can use recent conversation history, while short standalone queries with explicit HR/company intent stay ungrounded.
 
 ### Actions
 - `GET /actions`

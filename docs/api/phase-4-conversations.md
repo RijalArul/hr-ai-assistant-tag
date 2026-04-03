@@ -116,11 +116,21 @@ Important response fields:
 - `assistant_message`
 - `orchestration`
 - `triggered_actions`
+- `orchestration.context.query_policy`
+- `orchestration.context.retrieval_assessment`
+- `orchestration.context.conversation_grounding`
+- `orchestration.context.fallback_ladder`
 
 Testing note:
 - this route is the main Phase 4 surface for end-to-end testing of Phase 3 intent, sensitivity, file handling, and routing behavior
 - for `payroll_document_request`, Phase 4 now also checks enabled Phase 2 rules and can create linked `document_generation` actions automatically
+- document actions are now gated by explicit execution intent, so exploratory questions about payslips should not auto-create actions
+- exploratory phrasings such as `bagaimana download payslip saya` or `apakah payslip bisa di-email` are intentionally treated as non-executable until the user asks explicitly
 - low-risk payslip requests are auto-executed internally, so the returned `triggered_actions` entry can already contain a generated PDF reference inside `execution_result.document`
+- if the requested payroll period is unavailable, the conversation should still return `200 OK`; the action can remain pending with an explanatory note instead of breaking the whole exchange
+- short referential follow-ups such as "yang tadi" can now be grounded using recent conversation history before routing
+- short standalone questions such as `berapa sisa cuti saya?` stay ungrounded even inside an existing conversation because they already contain enough explicit intent on their own
+- policy lookups now expose freshness-aware and sufficiency-aware metadata through the orchestration context
 - when S3-compatible storage is configured, `execution_result.document` stores object metadata and a signed `download_url`; otherwise it falls back to inline base64 content
 
 Expected errors:

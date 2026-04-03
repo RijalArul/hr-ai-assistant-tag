@@ -50,6 +50,57 @@ Arsitektur ini mengikuti prinsip:
 - tetap pertahankan trust boundary dan session safety
 - jalankan agent yang independen secara paralel
 
+## Guardrail Runtime Yang Sudah Ditambahkan
+
+Walaupun routing makin semantic, runtime sekarang tetap menambahkan dua guardrail penting:
+
+### 1. Exact vs semantic precedence
+
+Untuk query personal HR yang sifatnya exact:
+- payroll
+- attendance
+- leave balance / leave request status
+- personal profile
+
+semantic routing **boleh membantu memahami intent**, tetapi tidak boleh mengambil alih sumber kebenaran. Query seperti ini tetap harus berakhir di jalur deterministic / structured lookup.
+
+Karena itu orchestrator sekarang menyimpan `query_policy` internal yang membedakan:
+- `factual_exact_lookup`
+- `temporal_lookup`
+- `comparison_lookup`
+- `semantic_lookup`
+- `ambiguous_lookup`
+
+Dan juga `boundary_mode`, misalnya:
+- `must_be_deterministic`
+- `deterministic_preferred`
+- `semantic_assisted`
+- `needs_clarification_or_provider`
+
+Tujuannya supaya semantic capability atau provider judge tidak bisa sembarangan melebarkan query deterministic menjadi route yang tidak perlu.
+
+### 2. Explicit execution intent gate
+
+Intent conversation dan execution intent tidak selalu sama.
+
+Contoh:
+- `payslip saya bulan ini bagaimana?` -> topiknya memang `payroll_document_request`
+- tapi itu belum tentu berarti user benar-benar ingin sistem membuat action atau generate PDF
+
+Karena itu runtime sekarang membedakan:
+- `execution_request`
+- `exploratory_request`
+- `topic_only`
+
+Action Phase 4 hanya otomatis dibuat untuk request yang benar-benar lolos gate eksekusi eksplisit.
+
+### 3. Conversation grounding and freshness guardrails
+
+Routing semantic sekarang juga diberi dua guardrail tambahan:
+
+- follow-up yang pendek atau referensial seperti `yang tadi`, `itu`, atau `sebelumnya` bisa membawa potongan history percakapan terbaru agar maksud user tetap grounded
+- untuk `company_rules`, ranking semantic/keyword sekarang tetap memperhatikan `effective_date`, sehingga versi policy yang lebih baru tidak mudah kalah oleh versi lama yang kebetulan lebih mirip secara lexical atau semantic
+
 ## Alur Target
 
 Flow yang diusulkan:

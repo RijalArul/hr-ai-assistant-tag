@@ -1146,6 +1146,8 @@ async def _build_document_generation_result(
 def should_auto_execute_action(action: ActionResponse) -> bool:
     if action.type != ActionType.DOCUMENT_GENERATION:
         return False
+    if action.status not in {ActionStatus.PENDING, ActionStatus.READY}:
+        return False
     if action.sensitivity != SensitivityLevel.LOW:
         return False
     if not isinstance(action.payload, DocumentGenerationPayload):

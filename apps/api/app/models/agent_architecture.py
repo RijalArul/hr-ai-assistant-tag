@@ -110,6 +110,7 @@ class OrchestratorRequest(BaseModel):
 
     message: str = Field(min_length=1, max_length=4000)
     attachments: list[AttachmentInput] = Field(default_factory=list)
+    conversation_history: list[dict[str, str]] = Field(default_factory=list)
 
 
 class HRDataAgentResult(BaseModel):

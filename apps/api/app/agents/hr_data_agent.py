@@ -89,6 +89,14 @@ def _format_date(value: date | None) -> str:
     return f"{value.day} {MONTH_NAMES_ID[value.month]} {value.year}"
 
 
+def _format_period_label(month: int | None, year: int | None) -> str | None:
+    if month is not None and year is not None:
+        return f"{MONTH_NAMES_ID[month]} {year}"
+    if year is not None:
+        return str(year)
+    return None
+
+
 def _extract_year(message: str) -> int | None:
     match = re.search(r"\b(20\d{2})\b", message)
     if match is None:
@@ -129,6 +137,53 @@ def _resolve_relative_period(
         return None, now.year - 1
 
     return None, None
+
+
+def _wants_latest_relevant_period(message: str) -> bool:
+    lowered = message.lower()
+    return any(
+        phrase in lowered
+        for phrase in [
+            "periode terkini",
+            "period terbaru",
+            "periode terbaru",
+            "latest period",
+            "latest payroll",
+            "yang relevan terakhir",
+            "yang terbaru",
+        ]
+    )
+
+
+def _wants_rolling_30_day_window(message: str) -> bool:
+    lowered = message.lower()
+    return any(
+        phrase in lowered
+        for phrase in [
+            "30 hari terakhir",
+            "rolling 30 days",
+            "rolling thirty days",
+            "sebulan terakhir",
+        ]
+    )
+
+
+def _previous_month_year(month: int, year: int) -> tuple[int, int]:
+    if month == 1:
+        return 12, year - 1
+    return month - 1, year
+
+
+def _build_retrieval_assessment(
+    status: str,
+    reason: str,
+    **extra: Any,
+) -> dict[str, Any]:
+    return {
+        "status": status,
+        "reason": reason,
+        **extra,
+    }
 
 
 def _serialize_value(value: Any) -> Any:
@@ -191,6 +246,37 @@ def _format_minutes_as_time(value: int) -> str:
     hours = value // 60
     minutes = value % 60
     return f"{hours:02d}:{minutes:02d}"
+
+
+def _wants_payroll_delta_explanation(message: str) -> bool:
+    lowered = message.lower()
+    mentions_payroll = any(
+        token in lowered
+        for token in [
+            "gaji",
+            "salary",
+            "payroll",
+            "net pay",
+            "slip gaji",
+            "payslip",
+        ]
+    )
+    mentions_delta = any(
+        token in lowered
+        for token in [
+            "lebih rendah",
+            "lebih kecil",
+            "lower",
+            "decrease",
+            "decreased",
+            "drop",
+            "turun",
+            "why",
+            "kenapa",
+            "mengapa",
+        ]
+    )
+    return mentions_payroll and mentions_delta
 
 
 def _serialize_row(row: dict[str, Any]) -> dict[str, Any]:
@@ -352,11 +438,18 @@ async def _get_attendance_records(
     session: SessionContext,
     month: int | None,
     year: int | None,
+    *,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    limit: int | None = None,
 ) -> list[dict[str, Any]]:
     cache = get_cache("attendance_records")
     cache_key = (
         f"{session.company_id}:{session.employee_id}:"
-        f"{month or 'all'}:{year or 'all'}"
+        f"{month or 'all'}:{year or 'all'}:"
+        f"{date_from.isoformat() if date_from else 'open'}:"
+        f"{date_to.isoformat() if date_to else 'open'}:"
+        f"{limit or 'default'}"
     )
     cached = cache.get(cache_key)
     if isinstance(cached, list):
@@ -377,8 +470,14 @@ async def _get_attendance_records(
     if year is not None:
         filters.append("EXTRACT(YEAR FROM a.attendance_date) = :year")
         params["year"] = year
+    if date_from is not None:
+        filters.append("a.attendance_date >= :date_from")
+        params["date_from"] = date_from
+    if date_to is not None:
+        filters.append("a.attendance_date <= :date_to")
+        params["date_to"] = date_to
 
-    limit = 31 if month is not None and year is not None else 7
+    resolved_limit = limit or (31 if month is not None and year is not None else 7)
     result = await db.execute(
         text(
             f"""
@@ -392,7 +491,7 @@ async def _get_attendance_records(
               ON e.id = a.employee_id
             WHERE {" AND ".join(filters)}
             ORDER BY a.attendance_date DESC
-            LIMIT {limit}
+            LIMIT {resolved_limit}
             """
         ),
         params,
@@ -490,25 +589,165 @@ def _summarize_profile(profile: dict[str, Any]) -> str:
     )
 
 
-def _summarize_payroll(records: list[dict[str, Any]]) -> str:
+def _find_previous_payroll_record(
+    reference_records: list[dict[str, Any]],
+    target_record: dict[str, Any],
+) -> dict[str, Any] | None:
+    for index, record in enumerate(reference_records):
+        if (
+            record.get("month") == target_record.get("month")
+            and record.get("year") == target_record.get("year")
+        ):
+            if index + 1 < len(reference_records):
+                return reference_records[index + 1]
+            return None
+    if len(reference_records) >= 2:
+        return reference_records[1]
+    return None
+
+
+def _summarize_payroll_difference(
+    current_record: dict[str, Any],
+    previous_record: dict[str, Any] | None,
+) -> str | None:
+    if previous_record is None:
+        return None
+
+    current_net = int(current_record["net_pay"])
+    previous_net = int(previous_record["net_pay"])
+    delta = current_net - previous_net
+    previous_period = _format_period_label(
+        previous_record.get("month"),
+        previous_record.get("year"),
+    ) or "periode sebelumnya"
+
+    if delta == 0:
+        return (
+            f"Dibanding periode {previous_period}, net pay tidak lebih rendah; "
+            f"nilainya tetap {_format_rupiah(current_net)}."
+        )
+
+    current_deductions = int(current_record.get("deductions", 0))
+    previous_deductions = int(previous_record.get("deductions", 0))
+    current_allowances = int(current_record.get("allowances", 0))
+    previous_allowances = int(previous_record.get("allowances", 0))
+    current_pph21 = int(current_record.get("pph21", 0))
+    previous_pph21 = int(previous_record.get("pph21", 0))
+    current_bpjs = int(current_record.get("bpjs_kesehatan", 0)) + int(
+        current_record.get("bpjs_ketenagakerjaan", 0)
+    )
+    previous_bpjs = int(previous_record.get("bpjs_kesehatan", 0)) + int(
+        previous_record.get("bpjs_ketenagakerjaan", 0)
+    )
+
+    factors: list[str] = []
+    if current_deductions > previous_deductions:
+        factors.append(
+            f"potongan naik {_format_rupiah(current_deductions - previous_deductions)}"
+        )
+    if current_pph21 > previous_pph21:
+        factors.append(
+            f"PPH21 naik {_format_rupiah(current_pph21 - previous_pph21)}"
+        )
+    if current_bpjs > previous_bpjs:
+        factors.append(
+            f"total BPJS naik {_format_rupiah(current_bpjs - previous_bpjs)}"
+        )
+    if current_allowances < previous_allowances:
+        factors.append(
+            f"allowances turun {_format_rupiah(previous_allowances - current_allowances)}"
+        )
+
+    if delta < 0:
+        summary = (
+            f"Dibanding periode {previous_period}, net pay turun "
+            f"{_format_rupiah(abs(delta))}."
+        )
+        if factors:
+            summary += f" Perubahan yang paling terlihat: {', '.join(factors)}."
+        return summary
+
+    summary = (
+        f"Dibanding periode {previous_period}, net pay justru naik "
+        f"{_format_rupiah(delta)}."
+    )
+    if factors:
+        summary += f" Walau begitu, ada perubahan komponen seperti {', '.join(factors)}."
+    return summary
+
+
+def _summarize_payroll(
+    records: list[dict[str, Any]],
+    *,
+    requested_month: int | None = None,
+    requested_year: int | None = None,
+    latest_reference_records: list[dict[str, Any]] | None = None,
+    wants_delta_explanation: bool = False,
+    retrieval_assessment: dict[str, Any] | None = None,
+) -> str:
+    reference_records = latest_reference_records or records
+
     if not records:
+        requested_period = _format_period_label(requested_month, requested_year)
+        if requested_period and reference_records:
+            latest = reference_records[0]
+            latest_period = _format_period_label(
+                latest.get("month"),
+                latest.get("year"),
+            ) or "periode terbaru"
+            prefix = ""
+            if retrieval_assessment and retrieval_assessment.get("status") == "partial":
+                prefix = f"{retrieval_assessment['reason']} "
+            summary = (
+                prefix
+                + (
+                f"Aku belum menemukan payroll untuk periode {requested_period}, "
+                f"jadi aku belum bisa memastikan kondisi gaji pada periode itu. "
+                f"Payroll terbaru yang tersedia adalah periode {latest_period} dengan "
+                f"net pay {_format_rupiah(latest['net_pay'])}, gross salary "
+                f"{_format_rupiah(latest['gross_salary'])}, dan status pembayaran "
+                f"{latest['payment_status']}."
+                )
+            )
+            if wants_delta_explanation:
+                difference_summary = _summarize_payroll_difference(
+                    latest,
+                    _find_previous_payroll_record(reference_records, latest),
+                )
+                if difference_summary:
+                    summary += f" {difference_summary}"
+            return summary
         return "Aku tidak menemukan data payroll yang sesuai di session karyawan ini."
 
     latest = records[0]
     period_label = f"{MONTH_NAMES_ID[latest['month']]} {latest['year']}"
-    return (
+    summary = (
         f"Payroll terbaru yang ditemukan adalah periode {period_label} dengan net pay "
         f"{_format_rupiah(latest['net_pay'])}, gross salary {_format_rupiah(latest['gross_salary'])}, "
         f"dan status pembayaran {latest['payment_status']}."
     )
+    if wants_delta_explanation:
+        difference_summary = _summarize_payroll_difference(
+            latest,
+            _find_previous_payroll_record(reference_records, latest),
+        )
+        if difference_summary:
+            summary += f" {difference_summary}"
+    return summary
 
 
 def _summarize_attendance(
     records: list[dict[str, Any]],
     *,
     wants_average_check_in: bool = False,
+    retrieval_assessment: dict[str, Any] | None = None,
 ) -> str:
     if not records:
+        if retrieval_assessment:
+            return (
+                f"{retrieval_assessment['reason']} "
+                "Aku tidak menemukan catatan kehadiran yang relevan untuk karyawan ini."
+            )
         return "Aku tidak menemukan catatan kehadiran yang relevan untuk karyawan ini."
 
     if wants_average_check_in:
@@ -529,10 +768,13 @@ def _summarize_attendance(
                 period_detail = (
                     f" pada periode {attendance_dates[0]} sampai {attendance_dates[-1]}"
                 )
-            return (
+            summary = (
                 f"Berdasarkan {len(check_in_minutes)} catatan check-in{period_detail}, "
                 f"rata-rata jam masuk kamu adalah {_format_minutes_as_time(average_minutes)} WIB."
             )
+            if retrieval_assessment and retrieval_assessment.get("status") == "partial":
+                return f"{retrieval_assessment['reason']} {summary}"
+            return summary
 
     status_counts: dict[str, int] = {}
     for record in records:
@@ -542,11 +784,14 @@ def _summarize_attendance(
     breakdown = ", ".join(
         f"{count} {status}" for status, count in sorted(status_counts.items())
     )
-    return (
+    summary = (
         f"Dari {len(records)} catatan kehadiran yang dicek, ringkasannya adalah {breakdown}. "
         f"Catatan terbaru bertanggal {_format_date(date.fromisoformat(latest['attendance_date']))} "
         f"dengan status {latest['status']}."
     )
+    if retrieval_assessment and retrieval_assessment.get("status") == "partial":
+        return f"{retrieval_assessment['reason']} {summary}"
+    return summary
 
 
 def _summarize_time_off(snapshot: dict[str, Any]) -> str:
@@ -584,6 +829,9 @@ async def run_hr_data_agent(
     explicit_year = _extract_year(message)
     relative_month, relative_year = _resolve_relative_period(message, now=current_now)
     wants_average_check_in = _wants_average_check_in(message)
+    wants_payroll_delta_explanation = _wants_payroll_delta_explanation(message)
+    wants_latest_relevant_period = _wants_latest_relevant_period(message)
+    rolling_window_days = 30 if _wants_rolling_30_day_window(message) else None
 
     month = explicit_month or relative_month
     current_year = current_now.year
@@ -595,6 +843,7 @@ async def run_hr_data_agent(
     summary_parts: list[str] = []
     evidence: list[EvidenceItem] = []
     records: dict[str, Any] = {}
+    retrieval_assessment: dict[str, Any] = {}
 
     if "profile" in topics:
         profile = await _get_employee_profile(db, session)
@@ -623,14 +872,85 @@ async def run_hr_data_agent(
             month,
             payroll_year_filter,
         )
+        payroll_reference_records: list[dict[str, Any]] = payroll_records
+        if wants_payroll_delta_explanation or (
+            not payroll_records and month is not None and payroll_year_filter is not None
+        ):
+            payroll_reference_records = await _get_payroll_records(
+                db,
+                session,
+                None,
+                None,
+            )
         records["payroll"] = payroll_records
-        summary_parts.append(_summarize_payroll(payroll_records))
+        if payroll_reference_records and payroll_reference_records is not payroll_records:
+            records["payroll_reference"] = payroll_reference_records
+        requested_current_period = (
+            month == current_now.month and payroll_year_filter == current_now.year
+        )
         if payroll_records:
-            latest = payroll_records[0]
+            payroll_assessment = _build_retrieval_assessment(
+                "enough",
+                "Data payroll yang dibutuhkan tersedia dengan cukup jelas.",
+                requested_period_found=True,
+                requested_month=month,
+                requested_year=payroll_year_filter,
+            )
+        elif payroll_reference_records:
+            if requested_current_period and current_now.day <= 5:
+                payroll_assessment = _build_retrieval_assessment(
+                    "partial",
+                    "Periode bulan ini masih sangat awal, jadi payroll lengkap biasanya belum tersedia. Aku memakai payroll lengkap terakhir sebagai konteks aman.",
+                    requested_period_found=False,
+                    fallback_mode="last_complete_period",
+                    fallback_period_label=_format_period_label(
+                        payroll_reference_records[0].get("month"),
+                        payroll_reference_records[0].get("year"),
+                    ),
+                    requested_month=month,
+                    requested_year=payroll_year_filter,
+                )
+            else:
+                payroll_assessment = _build_retrieval_assessment(
+                    "partial",
+                    "Payroll untuk periode yang diminta belum tersedia, jadi jawaban ini memakai payroll terbaru yang tersedia sebagai konteks.",
+                    requested_period_found=False,
+                    fallback_mode="latest_available",
+                    fallback_period_label=_format_period_label(
+                        payroll_reference_records[0].get("month"),
+                        payroll_reference_records[0].get("year"),
+                    ),
+                    requested_month=month,
+                    requested_year=payroll_year_filter,
+                )
+        else:
+            payroll_assessment = _build_retrieval_assessment(
+                "weak",
+                "Data payroll yang tersedia belum cukup untuk menjawab permintaan ini dengan aman.",
+                requested_period_found=False,
+                requested_month=month,
+                requested_year=payroll_year_filter,
+                asked_latest_relevant=wants_latest_relevant_period,
+            )
+        retrieval_assessment["payroll"] = payroll_assessment
+        summary_parts.append(
+            _summarize_payroll(
+                payroll_records,
+                requested_month=month,
+                requested_year=payroll_year_filter,
+                latest_reference_records=payroll_reference_records,
+                wants_delta_explanation=wants_payroll_delta_explanation,
+                retrieval_assessment=payroll_assessment,
+            )
+        )
+        payroll_evidence_source = payroll_records or payroll_reference_records
+        if payroll_evidence_source:
+            latest = payroll_evidence_source[0]
+            title = "Payroll record" if payroll_records else "Latest available payroll"
             evidence.append(
                 EvidenceItem(
                     source_type="hr_data",
-                    title="Payroll record",
+                    title=title,
                     snippet=(
                         f"{MONTH_NAMES_ID[latest['month']]} {latest['year']} | "
                         f"net pay {_format_rupiah(latest['net_pay'])}"
@@ -639,22 +959,120 @@ async def run_hr_data_agent(
                         "month": latest["month"],
                         "year": latest["year"],
                         "payment_status": latest["payment_status"],
+                        "requested_month": month,
+                        "requested_year": payroll_year_filter,
+                        "requested_period_found": bool(payroll_records),
+                        "retrieval_status": payroll_assessment["status"],
                     },
                 )
             )
 
     if "attendance" in topics:
+        attendance_date_from = None
+        attendance_date_to = None
+        if rolling_window_days is not None:
+            attendance_date_to = current_now.date()
+            attendance_date_from = attendance_date_to - timedelta(days=rolling_window_days - 1)
         attendance_records = await _get_attendance_records(
             db,
             session,
-            month,
-            attendance_year_filter,
+            None if rolling_window_days is not None else month,
+            None if rolling_window_days is not None else attendance_year_filter,
+            date_from=attendance_date_from,
+            date_to=attendance_date_to,
+            limit=rolling_window_days or None,
         )
+        attendance_assessment: dict[str, Any]
+        if not attendance_records:
+            attendance_assessment = _build_retrieval_assessment(
+                "weak",
+                "Catatan kehadiran untuk periode yang diminta belum cukup tersedia.",
+                requested_month=month,
+                requested_year=attendance_year_filter,
+                rolling_window_days=rolling_window_days,
+            )
+        elif rolling_window_days is not None:
+            if len(attendance_records) >= 10:
+                attendance_assessment = _build_retrieval_assessment(
+                    "enough",
+                    "Catatan rolling period yang tersedia cukup untuk dijadikan ringkasan awal.",
+                    rolling_window_days=rolling_window_days,
+                    record_count=len(attendance_records),
+                )
+            else:
+                attendance_assessment = _build_retrieval_assessment(
+                    "partial",
+                    "Catatan untuk rolling period ini masih terbatas, jadi ringkasannya masih bersifat awal.",
+                    rolling_window_days=rolling_window_days,
+                    record_count=len(attendance_records),
+                )
+        elif (
+            wants_average_check_in
+            and month == current_now.month
+            and attendance_year_filter == current_now.year
+            and current_now.day <= 5
+            and len(attendance_records) < 3
+        ):
+            current_period_records = list(attendance_records)
+            fallback_month, fallback_year = _previous_month_year(
+                current_now.month,
+                current_now.year,
+            )
+            fallback_records = await _get_attendance_records(
+                db,
+                session,
+                fallback_month,
+                fallback_year,
+            )
+            if fallback_records:
+                records["attendance_requested_period"] = current_period_records
+                records["attendance_fallback"] = fallback_records
+                attendance_records = fallback_records
+                attendance_assessment = _build_retrieval_assessment(
+                    "partial",
+                    (
+                        "Periode bulan ini masih sangat awal dan catatan check-in belum cukup stabil. "
+                        f"Aku memakai periode lengkap terakhir {_format_period_label(fallback_month, fallback_year)} sebagai konteks utama."
+                    ),
+                    requested_month=month,
+                    requested_year=attendance_year_filter,
+                    fallback_mode="last_complete_period",
+                    fallback_period_label=_format_period_label(fallback_month, fallback_year),
+                    original_record_count=len(current_period_records),
+                    record_count=len(attendance_records),
+                )
+            else:
+                attendance_assessment = _build_retrieval_assessment(
+                    "partial",
+                    "Periode bulan ini masih sangat awal dan catatan check-in yang tersedia belum cukup stabil.",
+                    requested_month=month,
+                    requested_year=attendance_year_filter,
+                    record_count=len(attendance_records),
+                )
+        elif wants_average_check_in and len(attendance_records) < 3:
+            attendance_assessment = _build_retrieval_assessment(
+                "partial",
+                "Jumlah catatan check-in yang tersedia masih terbatas untuk menghitung rata-rata yang stabil.",
+                requested_month=month,
+                requested_year=attendance_year_filter,
+                record_count=len(attendance_records),
+            )
+        else:
+            attendance_assessment = _build_retrieval_assessment(
+                "enough",
+                "Catatan kehadiran yang tersedia cukup untuk menjawab pertanyaan ini.",
+                requested_month=month,
+                requested_year=attendance_year_filter,
+                rolling_window_days=rolling_window_days,
+                record_count=len(attendance_records),
+            )
         records["attendance"] = attendance_records
+        retrieval_assessment["attendance"] = attendance_assessment
         summary_parts.append(
             _summarize_attendance(
                 attendance_records,
                 wants_average_check_in=wants_average_check_in,
+                retrieval_assessment=attendance_assessment,
             )
         )
         if attendance_records:
@@ -670,6 +1088,7 @@ async def run_hr_data_agent(
                     metadata={
                         "record_count": len(attendance_records),
                         "latest_status": latest["status"],
+                        "retrieval_status": attendance_assessment["status"],
                     },
                 )
             )
@@ -699,6 +1118,9 @@ async def run_hr_data_agent(
         summary_parts.append(
             "Aku belum menemukan kebutuhan data personal yang cukup jelas dari pesan ini."
         )
+
+    if retrieval_assessment:
+        records["retrieval_assessment"] = retrieval_assessment
 
     return HRDataAgentResult(
         topics=topics,

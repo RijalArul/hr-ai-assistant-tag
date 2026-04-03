@@ -77,6 +77,12 @@ Current provider-ready upgrades:
 - `file-agent` will try Gemini extraction for PDFs and images first, then fall back to local extraction/metadata
 - `company-agent` will try vector search over `company_rule_chunks` when Gemini embeddings are available, then fall back to keyword ranking
 - semantic routing will try vector retrieval for `intent_examples` and `agent_capabilities` when Gemini embeddings are synced, then fall back to lexical retrieval
+- deterministic HR queries now carry an internal `query_policy` and retrieval sufficiency metadata so semantic routing does not widen exact employee-data lookups carelessly
+- HR attendance and payroll retrieval now include temporal fallback behavior for incomplete early-period requests and expose sufficiency as `enough`, `partial`, or `weak`
+- short referential follow-ups can now be grounded with recent conversation history before routing
+- short standalone queries that already mention a clear HR/company target stay ungrounded, so previous context does not override a fresh explicit lookup
+- company policy retrieval now considers freshness/version priority so older policy versions do not outrank newer ones too easily
+- orchestrator now exposes a formal `fallback_ladder` in response context for easier audit/debug of classifier, semantic, and retrieval decisions
 
 Remote provider calls are opt-in in local development:
 - set `PHASE3_USE_REMOTE_PROVIDERS=true` if you intentionally want MiniMax and Gemini to be called
