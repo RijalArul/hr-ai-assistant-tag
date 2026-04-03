@@ -1,13 +1,15 @@
 """
-Run migrate-schema.sql against the Supabase PostgreSQL database.
+Run a SQL migration file against the Supabase PostgreSQL database.
 
 Usage:
-    python scripts/migrate.py
+    python scripts/migrate.py                          # runs migrate-schema.sql
+    python scripts/migrate.py --file migrate-phase5.sql  # runs a specific file
 
 Requires:
     pip install psycopg2-binary python-dotenv
 """
 
+import argparse
 import sys
 from pathlib import Path
 
@@ -36,6 +38,9 @@ def normalize_database_url(database_url: str) -> str:
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--file", default="migrate-schema.sql", help="SQL file to run (relative to project root)")
+    args = parser.parse_args()
     try:
         import psycopg2
     except ImportError:
@@ -51,9 +56,9 @@ def main() -> None:
 
     database_url = normalize_database_url(database_url)
 
-    sql_path = ROOT / "migrate-schema.sql"
+    sql_path = ROOT / args.file
     if not sql_path.exists():
-        print(f"[ERROR] migrate-schema.sql not found at: {sql_path}")
+        print(f"[ERROR] {args.file} not found at: {sql_path}")
         sys.exit(1)
 
     sql = sql_path.read_text(encoding="utf-8")
@@ -66,7 +71,7 @@ def main() -> None:
         print(f"[ERROR] Could not connect to database: {e}")
         sys.exit(1)
 
-    print(f"[INFO]  Running migrate-schema.sql ...")
+    print(f"[INFO]  Running {args.file} ...")
     try:
         with conn.cursor() as cur:
             cur.execute(sql)
