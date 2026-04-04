@@ -171,23 +171,12 @@ def _normalize_context_message(message: str) -> str:
 
 def _should_inherit_conversation_context(message: str) -> bool:
     lowered = _normalize_context_message(message)
-    referential_markers = [
-        "yang tadi",
-        "tadi",
-        "itu",
-        "tersebut",
-        "yang barusan",
-        "barusan",
-        "sebelumnya",
-        "yang itu",
-    ]
-    if any(marker in lowered for marker in referential_markers):
-        return True
 
-    informative_tokens = re.findall(r"[a-zA-Z0-9_]{3,}", lowered)
-    if len(informative_tokens) > 8:
-        return False
-
+    # Domain signals take priority: if the message contains its own domain-specific
+    # keywords, it is self-contained and must NOT inherit prior-conversation context.
+    # This prevents a referential word like "itu" embedded inside a standalone question
+    # (e.g. "aturan cuti itu bertambah") from pulling unrelated history (e.g. payroll)
+    # into the contextual message and polluting topic resolution.
     domain_signals = [
         "gaji",
         "salary",
@@ -246,7 +235,27 @@ def _should_inherit_conversation_context(message: str) -> bool:
         "klaim",
         "claim",
     ]
-    return not any(signal in lowered for signal in domain_signals)
+    if any(signal in lowered for signal in domain_signals):
+        return False
+
+    referential_markers = [
+        "yang tadi",
+        "tadi",
+        "itu",
+        "tersebut",
+        "yang barusan",
+        "barusan",
+        "sebelumnya",
+        "yang itu",
+    ]
+    if any(marker in lowered for marker in referential_markers):
+        return True
+
+    informative_tokens = re.findall(r"[a-zA-Z0-9_]{3,}", lowered)
+    if len(informative_tokens) > 8:
+        return False
+
+    return False
 
 
 def _get_recent_user_message(
