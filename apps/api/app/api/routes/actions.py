@@ -96,7 +96,8 @@ async def get_action_route(
     status_code=status.HTTP_200_OK,
     summary="Update action",
     description=(
-        "Updates action metadata or status. This route is limited to HR Admin."
+        "Updates action metadata or non-terminal status. This route is limited "
+        "to HR Admin."
     ),
     responses={
         401: {
@@ -134,8 +135,9 @@ async def update_action_route(
     summary="Execute action",
     description=(
         "Executes one action and stores execution metadata. Sensitive actions "
-        "are normalized to `manual_review` delivery only. This route is limited "
-        "to HR Admin."
+        "are normalized to `manual_review` delivery only. Pending, ready, or "
+        "already-claimed in-progress actions can be completed here. This route "
+        "is limited to HR Admin."
     ),
     responses={
         401: {

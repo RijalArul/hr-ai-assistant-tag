@@ -46,6 +46,7 @@ async def list_models(
 
 @router.post(
     "/chat/completions",
+    response_model=ChatCompletionResponse,
     summary="Chat completions (OpenAI-compatible)",
     description=(
         "Accepts an OpenAI Chat Completions request and routes it through the HR.ai "
@@ -61,7 +62,7 @@ async def chat_completions(
     db: AsyncSession = Depends(get_db),
     session: SessionContext = Depends(get_current_session),
     x_hr_conversation_id: str | None = Header(default=None),
-) -> Response:
+) -> ChatCompletionResponse | StreamingResponse:
     if request_body.stream:
         # Streaming — returns SSE
         async def event_stream():

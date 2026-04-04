@@ -4,6 +4,7 @@ import asyncio
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from functools import lru_cache
+from typing import Any
 
 from app.core.config import get_settings
 from app.services.provider_health import (
@@ -37,9 +38,9 @@ def is_object_storage_configured() -> bool:
 
 
 @lru_cache
-def _get_s3_client():
-    import boto3
-    from botocore.config import Config as BotoConfig
+def _get_s3_client() -> Any:
+    import boto3  # pyright: ignore[reportMissingImports]
+    from botocore.config import Config as BotoConfig  # pyright: ignore[reportMissingImports]
 
     session = boto3.session.Session()
     return session.client(

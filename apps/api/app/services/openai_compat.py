@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import time
 from uuid import UUID
 
@@ -46,6 +45,21 @@ def _make_completion_id(conversation_id: str) -> str:
     return f"chatcmpl-conv-{conversation_id}"
 
 
+def _build_response_message_metadata(
+    *,
+    conversation_id: str,
+    assistant_message_id: str,
+    triggered_action_count: int,
+    generated_document_count: int,
+) -> dict[str, object]:
+    return {
+        "conversation_id": conversation_id,
+        "assistant_message_id": assistant_message_id,
+        "triggered_action_count": triggered_action_count,
+        "generated_document_count": generated_document_count,
+    }
+
+
 async def process_chat_completion(
     db: AsyncSession,
     session: SessionContext,
@@ -79,7 +93,16 @@ async def process_chat_completion(
         session,
     )
 
-    answer = exchange.orchestration.answer or BLOCKED_SAFE_CONTENT
+    assistant_attachments = [
+        dict(attachment)
+        for attachment in exchange.assistant_message.attachments
+        if isinstance(attachment, dict)
+    ]
+    answer = (
+        exchange.assistant_message.content
+        or exchange.orchestration.answer
+        or BLOCKED_SAFE_CONTENT
+    )
     created_ts = int(time.time())
     comp_id = _make_completion_id(str(conv_id))
 
@@ -88,7 +111,16 @@ async def process_chat_completion(
         created=created_ts,
         choices=[
             ChatCompletionChoice(
-                message=OpenAIResponseMessage(content=answer),
+                message=OpenAIResponseMessage(
+                    content=answer,
+                    attachments=assistant_attachments,
+                    metadata=_build_response_message_metadata(
+                        conversation_id=str(conv_id),
+                        assistant_message_id=str(exchange.assistant_message.id),
+                        triggered_action_count=len(exchange.triggered_actions),
+                        generated_document_count=len(assistant_attachments),
+                    ),
+                ),
             )
         ],
         usage=ChatCompletionUsage(),

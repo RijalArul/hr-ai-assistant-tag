@@ -52,6 +52,10 @@ class ActionType(StrEnum):
     FOLLOWUP_CHAT = "followup_chat"
     ESCALATION = "escalation"
     CUSTOM_WEBHOOK = "custom_webhook"
+    # Session E – conversational request intake (F.1)
+    LEAVE_REQUEST = "leave_request"
+    REIMBURSEMENT_REQUEST = "reimbursement_request"
+    PROFILE_UPDATE_REQUEST = "profile_update_request"
 
 
 class ActionStatus(StrEnum):

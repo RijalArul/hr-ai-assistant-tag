@@ -1,0 +1,28 @@
+{
+  "include": [
+    "scripts"
+  ],
+  "exclude": [
+    "**/__pycache__",
+    ".pytest_cache",
+    ".venv",
+    "venv",
+    "apps/api/.venv",
+    "pytest-cache-files-*"
+  ],
+  "executionEnvironments": [
+    {
+      "root": "scripts",
+      "extraPaths": [
+        "apps/api",
+        "packages/shared"
+      ]
+    },
+    {
+      "root": "apps/api",
+      "extraPaths": [
+        "packages/shared"
+      ]
+    }
+  ]
+}

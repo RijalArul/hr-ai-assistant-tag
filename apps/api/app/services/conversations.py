@@ -19,6 +19,7 @@ from app.models import (
     ActionListResponse,
     AgentRoute,
     AgentTraceStep,
+    ConversationRequestCategory,
     ConversationCreateRequest,
     ConversationIntent,
     ConversationMessageCreateRequest,
@@ -30,6 +31,7 @@ from app.models import (
     IntentAssessment,
     OrchestratorRequest,
     OrchestratorResponse,
+    ResponseMode,
     SensitivityAssessment,
 )
 from app.services.action_engine import (
@@ -38,7 +40,18 @@ from app.services.action_engine import (
     list_actions_for_conversation,
     should_auto_execute_action,
 )
+from app.services.execution_intent import assess_action_execution_intent
 from shared import ConversationStatus, RuleTrigger, SensitivityLevel
+
+# Intents that can trigger conversational intake actions (F.4).
+_INTAKE_INTENTS: frozenset[str] = frozenset(
+    [
+        "payroll_document_request",
+        "time_off_request_status",
+        "company_policy",
+        "personal_profile",
+    ]
+)
 
 CONVERSATION_SELECT = """
 SELECT
@@ -107,32 +120,90 @@ def _normalize_message(message: str) -> str:
     return re.sub(r"\s+", " ", message.lower()).strip()
 
 
-def _build_action_follow_up_note(triggered_actions: list[ActionResponse]) -> str | None:
-    if not triggered_actions:
-        return None
-
+def _build_generated_document_attachments(
+    triggered_actions: list[ActionResponse],
+) -> list[dict[str, object]]:
     generated_documents = [
         action
         for action in triggered_actions
         if action.execution_result is not None
         and isinstance(action.execution_result.get("document"), dict)
     ]
+    attachments: list[dict[str, object]] = []
+
+    for action in generated_documents:
+        execution_result = action.execution_result
+        if not isinstance(execution_result, dict):
+            continue
+
+        document = execution_result.get("document")
+        if not isinstance(document, dict):
+            continue
+
+        attachment: dict[str, object] = {
+            "type": "generated_document",
+            "action_id": str(action.id),
+            "action_title": action.title,
+        }
+
+        for key in [
+            "document_type",
+            "template_key",
+            "file_name",
+            "mime_type",
+            "byte_size",
+            "period",
+            "storage_provider",
+            "storage_error",
+            "bucket",
+            "object_key",
+            "download_url",
+            "download_url_expires_at",
+            "etag",
+        ]:
+            value = document.get(key)
+            if value is not None:
+                attachment[key] = value
+
+        attachments.append(attachment)
+
+    return attachments
+
+
+def _build_action_follow_up_note(triggered_actions: list[ActionResponse]) -> str | None:
+    if not triggered_actions:
+        return None
+
+    generated_documents = _build_generated_document_attachments(triggered_actions)
     if generated_documents:
-        document = generated_documents[0].execution_result["document"]
-        period = document.get("period", {})
-        period_label = period.get("label")
-        if period_label:
+        generated_document = generated_documents[0]
+        period = generated_document.get("period", {})
+        period_label = period.get("label") if isinstance(period, dict) else None
+        download_url = generated_document.get("download_url")
+
+        if isinstance(period_label, str) and period_label:
+            if isinstance(download_url, str) and download_url:
+                return (
+                    f"\n\nAku juga sudah menyiapkan PDF payslip untuk periode {period_label}."
+                    f"\nLink download: {download_url}"
+                )
             return (
-                f" Aku juga sudah menyiapkan PDF payslip untuk periode {period_label} "
-                "di action percakapan ini."
+                f"\n\nAku juga sudah menyiapkan PDF payslip untuk periode {period_label}, "
+                "tetapi URL download belum tersedia di respons ini."
             )
-        return " Aku juga sudah menyiapkan PDF payslip di action percakapan ini."
+
+        if isinstance(download_url, str) and download_url:
+            return (
+                "\n\nAku juga sudah menyiapkan PDF payslip."
+                f"\nLink download: {download_url}"
+            )
+        return "\n\nAku juga sudah menyiapkan PDF payslip di action percakapan ini."
 
     if len(triggered_actions) == 1:
-        return f" Aku juga sudah membuat action tindak lanjut: {triggered_actions[0].title}."
+        return f"\n\nAku juga sudah membuat action tindak lanjut: {triggered_actions[0].title}."
 
     return (
-        f" Aku juga sudah membuat {len(triggered_actions)} action tindak lanjut "
+        f"\n\nAku juga sudah membuat {len(triggered_actions)} action tindak lanjut "
         "dari percakapan ini."
     )
 
@@ -142,90 +213,7 @@ def _assess_action_execution_intent(
     *,
     intent_key: str,
 ) -> dict[str, object]:
-    if intent_key != "payroll_document_request":
-        return {
-            "mode": "not_applicable",
-            "should_trigger": False,
-            "reason": "No executable action gate was needed for this intent.",
-        }
-
-    lowered = _normalize_message(message)
-    has_document_target = any(
-        token in lowered
-        for token in ["payslip", "salary slip", "pay slip", "slip gaji", "pdf"]
-    )
-    has_strong_execution_verb = any(
-        token in lowered
-        for token in [
-            "generate",
-            "buatkan",
-            "buat",
-            "kirimkan",
-            "kirim",
-            "send",
-            "emailkan",
-            "email",
-            "downloadkan",
-            "download",
-            "siapkan",
-            "prepare",
-            "terbitkan",
-        ]
-    )
-    addresses_assistant_directly = any(
-        token in lowered
-        for token in [
-            "tolong",
-            "please",
-            "bantu",
-            "bisakah kamu",
-            "could you",
-            "can you",
-            "minta tolong",
-        ]
-    )
-    exploratory_markers = any(
-        token in lowered
-        for token in [
-            "bagaimana",
-            "how",
-            "cara",
-            "apakah",
-            "what",
-            "bisa nggak",
-            "bisa gak",
-            "bisakah saya",
-            "can i",
-            "could i",
-        ]
-    )
-
-    if (
-        has_document_target
-        and exploratory_markers
-        and not (addresses_assistant_directly and has_strong_execution_verb)
-    ):
-        return {
-            "mode": "exploratory_request",
-            "should_trigger": False,
-            "reason": "The user appears to be asking about document availability, not requesting execution yet.",
-        }
-
-    if has_document_target and (
-        has_strong_execution_verb
-        or (addresses_assistant_directly and not exploratory_markers)
-    ):
-        return {
-            "mode": "execution_request",
-            "should_trigger": True,
-            "reason": "The user explicitly asked the assistant to generate or deliver the document.",
-        }
-
-    return {
-        "mode": "topic_only",
-        "should_trigger": False,
-        "reason": "The message mentions a document topic but does not clearly request execution.",
-    }
+    return assess_action_execution_intent(message, intent_key=intent_key)
 
 
 def _build_action_gate_note(action_gate: dict[str, object]) -> str | None:
@@ -551,7 +539,10 @@ async def create_conversation_message(
                 level=SensitivityLevel.LOW,
                 rationale="Blocked by guardrail.",
             ),
+            request_category=ConversationRequestCategory.INFORMATIONAL_QUESTION,
+            response_mode=ResponseMode.INFORMATIONAL,
             answer=safe_content,
+            recommended_next_steps=[],
             trace=[
                 AgentTraceStep(
                     agent="input-guard",
@@ -559,7 +550,15 @@ async def create_conversation_message(
                     detail=f"Blocked: {input_result.event_type}",
                 )
             ],
-            context={"guardrail_triggered": True, "guardrail_event": input_result.event_type},
+            context={
+                "guardrail_triggered": True,
+                "guardrail_event": input_result.event_type,
+                "response_contract": {
+                    "request_category": ConversationRequestCategory.INFORMATIONAL_QUESTION.value,
+                    "response_mode": ResponseMode.INFORMATIONAL.value,
+                    "recommended_next_steps": [],
+                },
+            },
         )
         refreshed = await _get_conversation_or_404(db, conversation_id, session)
         messages = await _list_conversation_messages(db, conversation_id, session.company_id)
@@ -604,11 +603,59 @@ async def create_conversation_message(
         payload.message,
         intent_key=orchestration.intent.primary_intent.value,
     )
+    sensitive_handling = orchestration.context.get("sensitive_handling")
+    sensitive_automation = (
+        sensitive_handling.get("automation")
+        if isinstance(sensitive_handling, dict)
+        else None
+    )
+    sensitive_trigger = None
+    sensitive_intent_key = None
+    should_create_sensitive_action = False
+    if isinstance(sensitive_automation, dict):
+        raw_trigger = sensitive_automation.get("trigger")
+        raw_intent_key = sensitive_automation.get("intent_key")
+        should_create_sensitive_action = bool(
+            sensitive_automation.get("should_create_action")
+        )
+        if isinstance(raw_trigger, str):
+            sensitive_trigger = RuleTrigger(raw_trigger)
+        if isinstance(raw_intent_key, str) and raw_intent_key.strip():
+            sensitive_intent_key = raw_intent_key.strip()
+
     if (
-        orchestration.intent.primary_intent.value == "payroll_document_request"
+        orchestration.route == AgentRoute.SENSITIVE_REDIRECT
+        and should_create_sensitive_action
+        and sensitive_trigger is not None
+        and sensitive_intent_key is not None
+    ):
+        triggered_actions = await create_actions_from_rule_trigger(
+            db,
+            session=session,
+            conversation_id=conversation_id,
+            trigger=sensitive_trigger,
+            intent_key=sensitive_intent_key,
+            sensitivity=orchestration.sensitivity.level,
+            message=payload.message,
+        )
+    elif (
+        orchestration.intent.primary_intent.value in _INTAKE_INTENTS
+        and orchestration.route != AgentRoute.SENSITIVE_REDIRECT
+        and action_gate.get("mode") == "missing_info"
+    ):
+        # Gate detected the intent but required fields were not in the message.
+        # Append the natural-language follow-up prompt so the user provides them.
+        follow_up = action_gate.get("follow_up_prompt", "")
+        if follow_up:
+            orchestration = orchestration.model_copy(
+                update={"answer": f"{orchestration.answer}\n\n{follow_up}"}
+            )
+    elif (
+        orchestration.intent.primary_intent.value in _INTAKE_INTENTS
         and orchestration.route != AgentRoute.SENSITIVE_REDIRECT
         and bool(action_gate["should_trigger"])
     ):
+        extracted_params = action_gate.get("extracted")
         triggered_actions = await create_actions_from_rule_trigger(
             db,
             session=session,
@@ -617,6 +664,7 @@ async def create_conversation_message(
             intent_key=orchestration.intent.primary_intent.value,
             sensitivity=orchestration.sensitivity.level,
             message=payload.message,
+            extracted_params=extracted_params if isinstance(extracted_params, dict) else {},
         )
         finalized_actions: list[ActionResponse] = []
         for action in triggered_actions:
@@ -658,6 +706,7 @@ async def create_conversation_message(
         triggered_actions = finalized_actions
 
     action_note = _build_action_follow_up_note(triggered_actions)
+    generated_document_attachments = _build_generated_document_attachments(triggered_actions)
     gate_note = _build_action_gate_note(action_gate)
     issue_note = "".join(auto_execution_issue_notes) if auto_execution_issue_notes else None
     combined_note = "".join(note for note in [action_note, gate_note, issue_note] if note)
@@ -698,7 +747,7 @@ async def create_conversation_message(
         employee_id=session.employee_id,
         role=ConversationMessageRole.ASSISTANT,
         content=orchestration.answer,
-        attachments=[],
+        attachments=generated_document_attachments,
         metadata={
             "orchestration": orchestration.model_dump(mode="json"),
         },

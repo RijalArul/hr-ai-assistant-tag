@@ -6,7 +6,8 @@ import hashlib
 import hmac
 import json
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from uuid import UUID
 
@@ -61,6 +62,10 @@ SELECT
     a.priority::text AS priority,
     a.sensitivity::text AS sensitivity,
     a.delivery_channels::text[] AS delivery_channels,
+    a.suggested_pic,
+    a.suggested_next_action,
+    a.sla_hours,
+    a.escalation_rule,
     a.payload,
     a.execution_result,
     a.metadata,
@@ -93,6 +98,10 @@ SELECT
     ra.summary_template,
     ra.priority::text AS priority,
     ra.delivery_channels::text[] AS delivery_channels,
+    ra.suggested_pic_template,
+    ra.suggested_next_action_template,
+    ra.sla_hours,
+    ra.escalation_rule_template,
     ra.payload_template
 FROM rule_actions ra
 """
@@ -178,6 +187,17 @@ class _SafeFormatDict(dict[str, object]):
         return "{" + key + "}"
 
 
+@dataclass(frozen=True)
+class GeneratedDocumentArtifact:
+    file_name: str
+    pdf_bytes: bytes
+    period_month: int
+    period_year: int
+    period_label: str
+    document: dict[str, object]
+    document_data: dict[str, object]
+
+
 def _dedupe_preserve_order(values: Sequence[str]) -> list[str]:
     seen: set[str] = set()
     result: list[str] = []
@@ -233,19 +253,90 @@ def _resolve_relative_period(
     return None, None
 
 
-def _format_rupiah(value: object) -> str:
+def _coerce_float(value: object) -> float | None:
     if value is None:
+        return None
+    if isinstance(value, bool):
+        return float(int(value))
+    if isinstance(value, (int, float)):
+        return float(value)
+
+    normalized = str(value).strip()
+    if not normalized:
+        return None
+
+    try:
+        return float(normalized)
+    except ValueError:
+        return None
+
+
+def _coerce_int_value(value: object) -> int | None:
+    number = _coerce_float(value)
+    if number is None:
+        return None
+    return int(number)
+
+
+def _coerce_date_value(value: object) -> date | str | None:
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str) and value.strip():
+        return value
+    return None
+
+
+def _require_int_field(values: Mapping[str, object], key: str) -> int:
+    value = _coerce_int_value(values.get(key))
+    if value is None:
+        raise ValueError(f"Expected integer field `{key}` in action payload row.")
+    return value
+
+
+def _require_str_field(values: Mapping[str, object], key: str) -> str:
+    value = values.get(key)
+    if value is None:
+        raise ValueError(f"Expected string field `{key}` in action payload row.")
+    return str(value)
+
+
+def _optional_str_field(values: Mapping[str, object], key: str) -> str | None:
+    value = values.get(key)
+    if value is None:
+        return None
+    return str(value)
+
+
+def _result_rowcount(result: object) -> int:
+    rowcount = getattr(result, "rowcount", 0)
+    return rowcount if isinstance(rowcount, int) else 0
+
+
+def _coerce_uuid(value: object) -> UUID | None:
+    if isinstance(value, UUID):
+        return value
+    if value is None:
+        return None
+    try:
+        return UUID(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _format_rupiah(value: object) -> str:
+    amount = _coerce_int_value(value)
+    if amount is None:
         return "-"
-    amount = int(float(value))
     return f"Rp{amount:,}".replace(",", ".")
 
 
-def _format_date(value: date | str | None) -> str:
-    if value is None:
+def _format_date(value: object) -> str:
+    normalized = _coerce_date_value(value)
+    if normalized is None:
         return "-"
-    if isinstance(value, str):
-        value = date.fromisoformat(value)
-    return f"{value.day} {MONTH_NAMES_ID[value.month]} {value.year}"
+    if isinstance(normalized, str):
+        normalized = date.fromisoformat(normalized)
+    return f"{normalized.day} {MONTH_NAMES_ID[normalized.month]} {normalized.year}"
 
 
 def _slugify(value: str) -> str:
@@ -952,68 +1043,88 @@ def _materialize_action_title(
 def _build_document_generation_result_from_row(
     row: dict[str, object],
     payload: DocumentGenerationPayload,
-) -> dict[str, object]:
-    month = int(row["month"])
-    year = int(row["year"])
+) -> GeneratedDocumentArtifact:
+    month = _require_int_field(row, "month")
+    year = _require_int_field(row, "year")
     period_label = _document_period_label(month, year) or f"{month}/{year}"
-    employee_name = str(row["employee_name"])
+    employee_name = _require_str_field(row, "employee_name")
+    company_name = _require_str_field(row, "company_name")
+    employee_email = _require_str_field(row, "employee_email")
+    position = _require_str_field(row, "position")
+    payment_status = _require_str_field(row, "payment_status")
+    payment_date = _coerce_date_value(row.get("payment_date"))
+    department_name = _optional_str_field(row, "department_name")
+    basic_salary = _require_int_field(row, "basic_salary")
+    allowances = _require_int_field(row, "allowances")
+    gross_salary = _require_int_field(row, "gross_salary")
+    deductions = _require_int_field(row, "deductions")
+    bpjs_kesehatan = _require_int_field(row, "bpjs_kesehatan")
+    bpjs_ketenagakerjaan = _require_int_field(row, "bpjs_ketenagakerjaan")
+    pph21 = _require_int_field(row, "pph21")
+    net_pay = _require_int_field(row, "net_pay")
     file_name = f"payslip-{year:04d}-{month:02d}-{_slugify(employee_name)}.pdf"
     preview_lines = [
         "HR.ai Payslip",
-        f"Company: {row['company_name']}",
+        f"Company: {company_name}",
         f"Employee: {employee_name}",
-        f"Position: {row['position']}",
-        f"Department: {row.get('department_name') or '-'}",
+        f"Position: {position}",
+        f"Department: {department_name or '-'}",
         f"Period: {period_label}",
-        f"Payment status: {row['payment_status']}",
-        f"Payment date: {_format_date(row.get('payment_date'))}",
-        f"Basic salary: {_format_rupiah(row.get('basic_salary'))}",
-        f"Allowances: {_format_rupiah(row.get('allowances'))}",
-        f"Gross salary: {_format_rupiah(row.get('gross_salary'))}",
-        f"Deductions: {_format_rupiah(row.get('deductions'))}",
-        f"BPJS Kesehatan: {_format_rupiah(row.get('bpjs_kesehatan'))}",
-        f"BPJS Ketenagakerjaan: {_format_rupiah(row.get('bpjs_ketenagakerjaan'))}",
-        f"PPH21: {_format_rupiah(row.get('pph21'))}",
-        f"Net pay: {_format_rupiah(row.get('net_pay'))}",
+        f"Payment status: {payment_status}",
+        f"Payment date: {_format_date(payment_date)}",
+        f"Basic salary: {_format_rupiah(basic_salary)}",
+        f"Allowances: {_format_rupiah(allowances)}",
+        f"Gross salary: {_format_rupiah(gross_salary)}",
+        f"Deductions: {_format_rupiah(deductions)}",
+        f"BPJS Kesehatan: {_format_rupiah(bpjs_kesehatan)}",
+        f"BPJS Ketenagakerjaan: {_format_rupiah(bpjs_ketenagakerjaan)}",
+        f"PPH21: {_format_rupiah(pph21)}",
+        f"Net pay: {_format_rupiah(net_pay)}",
     ]
     pdf_bytes = _build_simple_pdf(preview_lines)
 
-    return {
+    document = {
+        "document_type": payload.document_type,
+        "template_key": payload.template_key,
         "file_name": file_name,
-        "pdf_bytes": pdf_bytes,
-        "document": {
-            "document_type": payload.document_type,
-            "template_key": payload.template_key,
-            "file_name": file_name,
-            "mime_type": "application/pdf",
-            "byte_size": len(pdf_bytes),
-            "period": {
-                "month": month,
-                "year": year,
-                "label": period_label,
-            },
-            "preview_lines": preview_lines,
-        },
-        "document_data": {
-            "company_name": row["company_name"],
-            "employee_name": employee_name,
-            "employee_email": row["employee_email"],
-            "position": row["position"],
-            "department_name": row.get("department_name"),
+        "mime_type": "application/pdf",
+        "byte_size": len(pdf_bytes),
+        "period": {
             "month": month,
             "year": year,
-            "payment_status": row["payment_status"],
-            "payment_date": str(row["payment_date"]) if row.get("payment_date") else None,
-            "basic_salary": int(float(row["basic_salary"])),
-            "allowances": int(float(row["allowances"])),
-            "gross_salary": int(float(row["gross_salary"])),
-            "deductions": int(float(row["deductions"])),
-            "bpjs_kesehatan": int(float(row["bpjs_kesehatan"])),
-            "bpjs_ketenagakerjaan": int(float(row["bpjs_ketenagakerjaan"])),
-            "pph21": int(float(row["pph21"])),
-            "net_pay": int(float(row["net_pay"])),
+            "label": period_label,
         },
+        "preview_lines": preview_lines,
     }
+    document_data = {
+        "company_name": company_name,
+        "employee_name": employee_name,
+        "employee_email": employee_email,
+        "position": position,
+        "department_name": department_name,
+        "month": month,
+        "year": year,
+        "payment_status": payment_status,
+        "payment_date": str(payment_date) if payment_date is not None else None,
+        "basic_salary": basic_salary,
+        "allowances": allowances,
+        "gross_salary": gross_salary,
+        "deductions": deductions,
+        "bpjs_kesehatan": bpjs_kesehatan,
+        "bpjs_ketenagakerjaan": bpjs_ketenagakerjaan,
+        "pph21": pph21,
+        "net_pay": net_pay,
+    }
+
+    return GeneratedDocumentArtifact(
+        file_name=file_name,
+        pdf_bytes=pdf_bytes,
+        period_month=month,
+        period_year=year,
+        period_label=period_label,
+        document=document,
+        document_data=document_data,
+    )
 
 
 async def _build_document_generation_result(
@@ -1091,25 +1202,22 @@ async def _build_document_generation_result(
         )
 
     if payload.document_type in PAYSLIP_DOCUMENT_TYPES:
-        rendered = _build_document_generation_result_from_row(dict(row), payload)
-        pdf_bytes = rendered.pop("pdf_bytes")
-        file_name = str(rendered.pop("file_name"))
-        document = rendered["document"]
-        period = document["period"]
+        artifact = _build_document_generation_result_from_row(dict(row), payload)
+        document = dict(artifact.document)
         object_key = (
             f"companies/{session.company_id}/employees/{session.employee_id}/"
-            f"documents/payslips/{period['year']}/{int(period['month']):02d}/{file_name}"
+            f"documents/payslips/{artifact.period_year}/{artifact.period_month:02d}/{artifact.file_name}"
         )
         storage_result = await upload_document_bytes(
             object_key=object_key,
-            content=pdf_bytes,
+            content=artifact.pdf_bytes,
             content_type="application/pdf",
             metadata={
                 "conversation_id": str(action.conversation_id),
                 "employee_id": session.employee_id,
                 "document_type": payload.document_type,
-                "period_month": str(period["month"]),
-                "period_year": str(period["year"]),
+                "period_month": str(artifact.period_month),
+                "period_year": str(artifact.period_year),
             },
         )
         if storage_result.object_key and storage_result.bucket:
@@ -1129,10 +1237,13 @@ async def _build_document_generation_result(
                     "storage_provider": "inline_fallback",
                     "storage_error": storage_result.fallback_reason,
                     "encoding": "base64",
-                    "content_base64": base64.b64encode(pdf_bytes).decode("ascii"),
+                    "content_base64": base64.b64encode(artifact.pdf_bytes).decode("ascii"),
                 }
             )
-        return rendered
+        return {
+            "document": document,
+            "document_data": dict(artifact.document_data),
+        }
 
     return {
         "document": {
@@ -1146,6 +1257,8 @@ async def _build_document_generation_result(
 def should_auto_execute_action(action: ActionResponse) -> bool:
     if action.type != ActionType.DOCUMENT_GENERATION:
         return False
+    # Only PENDING or READY actions are eligible; FAILED actions are not retried
+    # automatically to avoid cascading failures (I.10).
     if action.status not in {ActionStatus.PENDING, ActionStatus.READY}:
         return False
     if action.sensitivity != SensitivityLevel.LOW:
@@ -1153,6 +1266,43 @@ def should_auto_execute_action(action: ActionResponse) -> bool:
     if not isinstance(action.payload, DocumentGenerationPayload):
         return False
     return action.payload.document_type in PAYSLIP_DOCUMENT_TYPES
+
+
+# Action types that rely on conversational extraction rather than document resolution.
+_INTAKE_ACTION_TYPES: frozenset[ActionType] = frozenset(
+    [
+        ActionType.LEAVE_REQUEST,
+        ActionType.REIMBURSEMENT_REQUEST,
+        ActionType.PROFILE_UPDATE_REQUEST,
+    ]
+)
+
+# Required fields that must be present before an intake action can be created.
+_INTAKE_REQUIRED_FIELDS: dict[ActionType, list[str]] = {
+    ActionType.LEAVE_REQUEST: ["start_date", "end_date"],
+    ActionType.REIMBURSEMENT_REQUEST: ["amount", "expense_date"],
+    ActionType.PROFILE_UPDATE_REQUEST: [],  # validated separately below
+}
+
+
+def _validate_intake_params(action_type: ActionType, params: dict) -> None:
+    """Raise HTTP 422 when required intake fields are missing (F.3 validation)."""
+    required = _INTAKE_REQUIRED_FIELDS.get(action_type, [])
+    missing = [f for f in required if not params.get(f)]
+    if missing:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"Cannot create {action_type.value} action: "
+                f"required fields missing: {', '.join(missing)}"
+            ),
+        )
+    if action_type == ActionType.PROFILE_UPDATE_REQUEST:
+        if not params.get("fields_to_update"):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Cannot create profile_update_request action: fields_to_update is empty.",
+            )
 
 
 async def create_actions_from_rule_trigger(
@@ -1164,6 +1314,7 @@ async def create_actions_from_rule_trigger(
     intent_key: str,
     sensitivity: SensitivityLevel,
     message: str,
+    extracted_params: dict | None = None,
 ) -> list[ActionResponse]:
     matched_rules = await _load_matching_rules(
         db,
@@ -1190,32 +1341,50 @@ async def create_actions_from_rule_trigger(
                 continue
 
             payload_template = copy.deepcopy(action_config.payload_template)
-            document_type = None
-            if isinstance(payload_template, dict):
-                raw_document_type = payload_template.get("document_type")
-                if isinstance(raw_document_type, str):
-                    document_type = raw_document_type
+            if action_config.action_type in _INTAKE_ACTION_TYPES:
+                # Conversational intake: merge admin-configured defaults with params
+                # extracted by the execution gate, then run minimum field validation.
+                merged: dict = payload_template if isinstance(payload_template, dict) else {}
+                merged = {**merged, **(extracted_params or {})}
+                _validate_intake_params(action_config.action_type, merged)
+                document_parameters: dict = {}
+                period_label: str | None = None
+                # Extend context with payload fields so that admin-configured
+                # title/summary templates like "{leave_type}" resolve correctly.
+                context: dict = {
+                    "conversation_id": str(conversation_id),
+                    "intent_key": intent_key,
+                    "message": message,
+                    **merged,
+                }
+                payload_data = merged
+            else:
+                document_type = None
+                if isinstance(payload_template, dict):
+                    raw_document_type = payload_template.get("document_type")
+                    if isinstance(raw_document_type, str):
+                        document_type = raw_document_type
 
-            document_parameters = await _resolve_document_parameters(
-                db,
-                session,
-                message=message,
-                document_type=document_type,
-            )
-            period_label = _document_period_label(
-                document_parameters.get("month"),
-                document_parameters.get("year"),
-            )
-            context = {
-                "conversation_id": str(conversation_id),
-                "intent_key": intent_key,
-                "message": message,
-                "document_parameters": document_parameters,
-                "month": document_parameters.get("month"),
-                "year": document_parameters.get("year"),
-                "period_label": period_label,
-            }
-            payload_data = _materialize_payload_template(action_config, context)
+                document_parameters = await _resolve_document_parameters(
+                    db,
+                    session,
+                    message=message,
+                    document_type=document_type,
+                )
+                period_label = _document_period_label(
+                    document_parameters.get("month"),
+                    document_parameters.get("year"),
+                )
+                context = {
+                    "conversation_id": str(conversation_id),
+                    "intent_key": intent_key,
+                    "message": message,
+                    "document_parameters": document_parameters,
+                    "month": document_parameters.get("month"),
+                    "year": document_parameters.get("year"),
+                    "period_label": period_label,
+                }
+                payload_data = _materialize_payload_template(action_config, context)
             payload_model = ACTION_TYPE_TO_PAYLOAD_MODEL[action_config.action_type].model_validate(
                 {
                     "type": action_config.action_type.value,
@@ -1228,17 +1397,30 @@ async def create_actions_from_rule_trigger(
                 context=context,
                 payload_data=payload_data,
             )
-            summary = action_config.summary_template
-            if summary is not None:
-                summary = str(_render_template_value(summary, context))
+            summary_template = action_config.summary_template
+            summary = summary_template
+            if summary_template is not None:
+                summary = str(_render_template_value(summary_template, context))
                 if (
                     action_config.action_type == ActionType.DOCUMENT_GENERATION
                     and payload_data.get("document_type") in PAYSLIP_DOCUMENT_TYPES
                     and period_label
-                    and "{period_label}" not in action_config.summary_template
+                    and "{period_label}" not in summary_template
                     and period_label not in summary
                 ):
                     summary = f"{summary} Requested period: {period_label}."
+
+            suggested_pic = action_config.suggested_pic_template
+            if suggested_pic is not None:
+                suggested_pic = str(_render_template_value(suggested_pic, context))
+
+            suggested_next_action = action_config.suggested_next_action_template
+            if suggested_next_action is not None:
+                suggested_next_action = str(_render_template_value(suggested_next_action, context))
+
+            escalation_rule = action_config.escalation_rule_template
+            if escalation_rule is not None:
+                escalation_rule = str(_render_template_value(escalation_rule, context))
 
             action = await create_action(
                 db,
@@ -1250,6 +1432,10 @@ async def create_actions_from_rule_trigger(
                     priority=action_config.priority,
                     sensitivity=sensitivity,
                     delivery_channels=action_config.delivery_channels,
+                    suggested_pic=suggested_pic,
+                    suggested_next_action=suggested_next_action,
+                    sla_hours=action_config.sla_hours,
+                    escalation_rule=escalation_rule,
                     payload=payload_model,
                     metadata={
                         "automation": {
@@ -1257,7 +1443,13 @@ async def create_actions_from_rule_trigger(
                             "intent_key": intent_key,
                         },
                         "source_message": message,
-                        "document_parameters": document_parameters,
+                        # For intake actions store extracted params; for document
+                        # actions store the resolved document period parameters.
+                        **(  # type: ignore[arg-type]
+                            {"extracted_params": extracted_params or {}}
+                            if action_config.action_type in _INTAKE_ACTION_TYPES
+                            else {"document_parameters": document_parameters}
+                        ),
                     },
                 ),
                 rule_id=rule.id,
@@ -1294,6 +1486,10 @@ async def create_action(
                 priority,
                 sensitivity,
                 delivery_channels,
+                suggested_pic,
+                suggested_next_action,
+                sla_hours,
+                escalation_rule,
                 payload,
                 metadata
             )
@@ -1309,6 +1505,10 @@ async def create_action(
                 CAST(:priority AS action_priority_enum),
                 CAST(:sensitivity AS sensitivity_level_enum),
                 CAST(:delivery_channels AS delivery_channel_enum[]),
+                :suggested_pic,
+                :suggested_next_action,
+                :sla_hours,
+                :escalation_rule,
                 CAST(:payload AS jsonb),
                 CAST(:metadata AS jsonb)
             )
@@ -1327,6 +1527,10 @@ async def create_action(
             "priority": payload.priority.value,
             "sensitivity": payload.sensitivity.value,
             "delivery_channels": delivery_channels,
+            "suggested_pic": payload.suggested_pic,
+            "suggested_next_action": payload.suggested_next_action,
+            "sla_hours": payload.sla_hours,
+            "escalation_rule": payload.escalation_rule,
             "payload": _json_dumps(payload.payload.model_dump(mode="json")),
             "metadata": _json_dumps(payload.metadata),
         },
@@ -1463,13 +1667,28 @@ async def update_action(
     if not set_clauses:
         return existing
 
-    await db.execute(
+    status_guard_clause = ""
+    if payload.status == ActionStatus.IN_PROGRESS and existing.status != ActionStatus.IN_PROGRESS:
+        # Claim transition for manual HR triage should only succeed while the
+        # action is still unclaimed. Keep it aligned with the execution path by
+        # allowing PENDING/READY -> IN_PROGRESS only.
+        status_guard_clause = """
+              AND status IN (
+                CAST(:pending_status AS action_status_enum),
+                CAST(:ready_status AS action_status_enum)
+              )
+        """
+        values["pending_status"] = ActionStatus.PENDING.value
+        values["ready_status"] = ActionStatus.READY.value
+
+    update_result = await db.execute(
         text(
             f"""
             UPDATE actions
             SET {", ".join(set_clauses)}
             WHERE id = :action_id
               AND company_id = :company_id
+              {status_guard_clause}
             """
         ),
         {
@@ -1478,6 +1697,15 @@ async def update_action(
             **values,
         },
     )
+    if (
+        payload.status == ActionStatus.IN_PROGRESS
+        and existing.status != ActionStatus.IN_PROGRESS
+        and _result_rowcount(update_result) == 0
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Action could not be claimed for manual review because another update already changed its status.",
+        )
     refreshed = await _get_action_or_404(db, action_id, session)
     await _insert_action_log(
         db,
@@ -1511,6 +1739,43 @@ async def execute_action(
             detail="Cancelled actions cannot be executed.",
         )
 
+    if existing.status == ActionStatus.FAILED:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Failed actions must be reset before they can be executed again.",
+        )
+
+    if existing.status != ActionStatus.IN_PROGRESS:
+        # Atomically claim the action by transitioning to IN_PROGRESS. Only rows
+        # still in PENDING or READY are updated; if rowcount is 0 another caller
+        # beat us to it (I.10 – status-transition guard).
+        claim_result = await db.execute(
+            text(
+                """
+                UPDATE actions
+                SET status = CAST(:in_progress AS action_status_enum)
+                WHERE id = :action_id
+                  AND company_id = :company_id
+                  AND status IN (
+                    CAST(:pending AS action_status_enum),
+                    CAST(:ready AS action_status_enum)
+                  )
+                """
+            ),
+            {
+                "action_id": str(action_id),
+                "company_id": session.company_id,
+                "in_progress": ActionStatus.IN_PROGRESS.value,
+                "pending": ActionStatus.PENDING.value,
+                "ready": ActionStatus.READY.value,
+            },
+        )
+        if _result_rowcount(claim_result) == 0:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Action could not be claimed for execution – status may have changed.",
+            )
+
     requested_channels = (
         [channel.value for channel in payload.delivery_channels]
         if payload.delivery_channels is not None
@@ -1532,14 +1797,53 @@ async def execute_action(
             else "direct_delivery"
         ),
     }
-    if existing.type == ActionType.DOCUMENT_GENERATION:
-        execution_result.update(
-            await _build_document_generation_result(
-                db,
-                action=existing,
-                session=session,
+    try:
+        if existing.type == ActionType.DOCUMENT_GENERATION:
+            execution_result.update(
+                await _build_document_generation_result(
+                    db,
+                    action=existing,
+                    session=session,
+                )
             )
+    except Exception as exc:
+        # Mark action as FAILED so it is not auto-retried on the next message
+        # (I.10 – retry policy / status transition hardening).
+        failed_result: dict[str, object] = {
+            **execution_result,
+            "error": str(exc) if str(exc) else "Execution failed.",
+        }
+        await db.execute(
+            text(
+                """
+                UPDATE actions
+                SET
+                    status = CAST(:action_status AS action_status_enum),
+                    execution_result = CAST(:execution_result AS jsonb),
+                    last_executed_at = :last_executed_at
+                WHERE id = :action_id
+                  AND company_id = :company_id
+                """
+            ),
+            {
+                "action_id": str(action_id),
+                "company_id": session.company_id,
+                "action_status": ActionStatus.FAILED.value,
+                "execution_result": _json_dumps(failed_result),
+                "last_executed_at": executed_at,
+            },
         )
+        await _insert_action_log(
+            db,
+            action_id=str(action_id),
+            company_id=session.company_id,
+            event_name="action.failed",
+            action_status=ActionStatus.FAILED.value,
+            message=str(exc) if str(exc) else "Execution failed.",
+            metadata=failed_result,
+        )
+        await db.commit()
+        raise
 
     await db.execute(
         text(
@@ -1656,6 +1960,7 @@ async def create_rule(
     company_id: str,
     payload: RuleCreateRequest,
 ) -> RuleResponse:
+    rule_id: UUID | None = None
     try:
         result = await db.execute(
             text(
@@ -1695,7 +2000,9 @@ async def create_rule(
                 "is_enabled": payload.is_enabled,
             },
         )
-        rule_id = result.scalar_one()
+        rule_id = _coerce_uuid(result.scalar_one())
+        if rule_id is None:
+            raise RuntimeError("Database returned an invalid rule identifier.")
 
         for action_config in payload.actions:
             await db.execute(
@@ -1708,6 +2015,10 @@ async def create_rule(
                         summary_template,
                         priority,
                         delivery_channels,
+                        suggested_pic_template,
+                        suggested_next_action_template,
+                        sla_hours,
+                        escalation_rule_template,
                         payload_template
                     )
                     VALUES (
@@ -1717,6 +2028,10 @@ async def create_rule(
                         :summary_template,
                         CAST(:priority AS action_priority_enum),
                         CAST(:delivery_channels AS delivery_channel_enum[]),
+                        :suggested_pic_template,
+                        :suggested_next_action_template,
+                        :sla_hours,
+                        :escalation_rule_template,
                         CAST(:payload_template AS jsonb)
                     )
                     """
@@ -1728,6 +2043,10 @@ async def create_rule(
                     "summary_template": action_config.summary_template,
                     "priority": action_config.priority.value,
                     "delivery_channels": [channel.value for channel in action_config.delivery_channels],
+                    "suggested_pic_template": action_config.suggested_pic_template,
+                    "suggested_next_action_template": action_config.suggested_next_action_template,
+                    "sla_hours": action_config.sla_hours,
+                    "escalation_rule_template": action_config.escalation_rule_template,
                     "payload_template": _json_dumps(action_config.payload_template),
                 },
             )
@@ -1740,6 +2059,8 @@ async def create_rule(
             constraint_name="uq_rules_company_name",
             detail="A rule with the same name already exists in this company.",
         )
+    if rule_id is None:
+        raise RuntimeError("Rule identifier was not created.")
     return await _get_rule_or_404(db, rule_id, company_id)
 
 
@@ -1818,6 +2139,10 @@ async def update_rule(
                             summary_template,
                             priority,
                             delivery_channels,
+                            suggested_pic_template,
+                            suggested_next_action_template,
+                            sla_hours,
+                            escalation_rule_template,
                             payload_template
                         )
                         VALUES (
@@ -1827,6 +2152,10 @@ async def update_rule(
                             :summary_template,
                             CAST(:priority AS action_priority_enum),
                             CAST(:delivery_channels AS delivery_channel_enum[]),
+                            :suggested_pic_template,
+                            :suggested_next_action_template,
+                            :sla_hours,
+                            :escalation_rule_template,
                             CAST(:payload_template AS jsonb)
                         )
                         """
@@ -1838,6 +2167,10 @@ async def update_rule(
                         "summary_template": action_config.summary_template,
                         "priority": action_config.priority.value,
                         "delivery_channels": [channel.value for channel in action_config.delivery_channels],
+                        "suggested_pic_template": action_config.suggested_pic_template,
+                        "suggested_next_action_template": action_config.suggested_next_action_template,
+                        "sla_hours": action_config.sla_hours,
+                        "escalation_rule_template": action_config.escalation_rule_template,
                         "payload_template": _json_dumps(action_config.payload_template),
                     },
                 )
@@ -1907,6 +2240,7 @@ async def create_webhook(
     company_id: str,
     payload: WebhookCreateRequest,
 ) -> WebhookResponse:
+    webhook_id: UUID | None = None
     try:
         result = await db.execute(
             text(
@@ -1939,7 +2273,9 @@ async def create_webhook(
                 "is_active": payload.is_active,
             },
         )
-        webhook_id = result.scalar_one()
+        webhook_id = _coerce_uuid(result.scalar_one())
+        if webhook_id is None:
+            raise RuntimeError("Database returned an invalid webhook identifier.")
         await db.commit()
     except IntegrityError as exc:
         await _rollback_and_raise_conflict(
@@ -1948,6 +2284,8 @@ async def create_webhook(
             constraint_name="uq_webhooks_company_name",
             detail="A webhook with the same name already exists in this company.",
         )
+    if webhook_id is None:
+        raise RuntimeError("Webhook identifier was not created.")
     return await _get_webhook_or_404(db, webhook_id, company_id)
 
 

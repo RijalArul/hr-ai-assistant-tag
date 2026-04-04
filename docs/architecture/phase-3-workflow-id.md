@@ -11,6 +11,15 @@ Phase 3 adalah lapisan orkestrasi AI yang berada di tengah:
 
 Artinya, Phase 3 bertugas memahami pesan user, menentukan jalur pemrosesan yang benar, lalu menyusun jawaban akhir dengan tetap menjaga trust boundary.
 
+Dalam blueprint produk Phase 7, Phase 3 saat ini menjalankan dua lapisan sekaligus:
+- employee support layer
+- reasoning layer
+
+Sedangkan HR operations layer tetap berada di action engine dan surface API action/rules/webhooks.
+
+Referensi ringkas:
+- `docs/architecture/phase-7-product-capability-blueprint-id.md`
+
 ## Posisi Dalam Arsitektur
 
 Urutan besarnya seperti ini:
@@ -35,6 +44,7 @@ trusted session
   -> sensitivity assessment
   -> route selection
   -> hr-data-agent dan/atau company-agent
+  -> request category + response mode resolution
   -> final synthesized answer
 ```
 
@@ -172,10 +182,33 @@ Setelah agent selesai, orchestrator menyusun jawaban akhir yang lebih rapi untuk
 Biasanya jawaban akhir memuat:
 - ringkasan jawaban utama
 - fakta yang relevan dari data atau policy
+- mode jawaban yang tepat untuk konteks user
 - evidence yang mendasari jawaban
 - trace agent yang dipakai
 
 Jadi orchestrator bukan hanya merutekan, tapi juga menjadi lapisan penyatu hasil.
+
+## 7.1 Request category dan response mode
+
+Sebelum jawaban akhir dikembalikan, orchestrator juga menyimpulkan jenis kebutuhan user dan bentuk jawaban yang paling tepat.
+
+Contoh `request_category` saat ini:
+- `informational_question`
+- `guidance_request`
+- `policy_reasoning_request`
+- `workflow_request`
+- `sensitive_report`
+- `decision_support`
+
+Contoh `response_mode` saat ini:
+- `informational`
+- `guidance`
+- `policy_reasoning`
+- `workflow_intake`
+- `sensitive_guarded`
+- `hr_ops_summary`
+
+Dengan pemisahan ini, Phase 3 tidak hanya menjawab "intent-nya apa", tetapi juga "jawabannya harus berbentuk seperti apa".
 
 ## 8. Output yang dikembalikan
 
@@ -183,7 +216,10 @@ Output akhir dari orchestrator saat ini berisi:
 - `route`
 - `intent`
 - `sensitivity`
+- `request_category`
+- `response_mode`
 - `answer`
+- `recommended_next_steps`
 - `used_agents`
 - `evidence`
 - `trace`

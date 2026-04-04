@@ -81,10 +81,55 @@ INSERT INTO employees (id, company_id, department_id, manager_id, name, email, p
         'permanent', 'active', 'employee', '851293259510710323', '2023-06-01')
 ON CONFLICT (company_id, email) DO NOTHING;
 
+-- 5. HR Operations Specialist
+INSERT INTO employees (id, company_id, department_id, manager_id, name, email, position, employment_type, employment_status, role, join_date) VALUES
+    ('20000000-0000-0000-0000-000000000005', '00000000-0000-0000-0000-000000000001',
+        '10000000-0000-0000-0000-000000000002', '20000000-0000-0000-0000-000000000001',
+        'Dina Pratama', 'dina.pratama@majubersama.id', 'HR Operations Specialist',
+        'permanent', 'active', 'employee', '2023-02-13')
+ON CONFLICT (company_id, email) DO NOTHING;
+
+-- 6. Payroll and Benefits Specialist
+INSERT INTO employees (id, company_id, department_id, manager_id, name, email, position, employment_type, employment_status, role, join_date) VALUES
+    ('20000000-0000-0000-0000-000000000006', '00000000-0000-0000-0000-000000000001',
+        '10000000-0000-0000-0000-000000000002', '20000000-0000-0000-0000-000000000001',
+        'Rina Maheswari', 'rina.maheswari@majubersama.id', 'Payroll and Benefits Specialist',
+        'permanent', 'active', 'employee', '2023-04-10')
+ON CONFLICT (company_id, email) DO NOTHING;
+
+-- 7. Talent Acquisition Specialist
+INSERT INTO employees (id, company_id, department_id, manager_id, name, email, position, employment_type, employment_status, role, join_date) VALUES
+    ('20000000-0000-0000-0000-000000000007', '00000000-0000-0000-0000-000000000001',
+        '10000000-0000-0000-0000-000000000002', '20000000-0000-0000-0000-000000000001',
+        'Nadya Putri', 'nadya.putri@majubersama.id', 'Talent Acquisition Specialist',
+        'permanent', 'active', 'employee', '2023-05-08')
+ON CONFLICT (company_id, email) DO NOTHING;
+
+-- 8. HR Business Partner
+INSERT INTO employees (id, company_id, department_id, manager_id, name, email, position, employment_type, employment_status, role, join_date) VALUES
+    ('20000000-0000-0000-0000-000000000008', '00000000-0000-0000-0000-000000000001',
+        '10000000-0000-0000-0000-000000000002', '20000000-0000-0000-0000-000000000001',
+        'Arif Nugroho', 'arif.nugroho@majubersama.id', 'HR Business Partner',
+        'permanent', 'active', 'employee', '2022-11-21')
+ON CONFLICT (company_id, email) DO NOTHING;
+
+-- 9. IT Support Specialist
+INSERT INTO employees (id, company_id, department_id, manager_id, name, email, position, employment_type, employment_status, role, join_date) VALUES
+    ('20000000-0000-0000-0000-000000000009', '00000000-0000-0000-0000-000000000001',
+        '10000000-0000-0000-0000-000000000001', '20000000-0000-0000-0000-000000000002',
+        'Kevin Saputra', 'kevin.saputra@majubersama.id', 'IT Support Specialist',
+        'permanent', 'active', 'employee', '2023-07-03')
+ON CONFLICT (company_id, email) DO NOTHING;
+
 -- Set Tech Lead as head of IT department
 UPDATE departments
 SET head_employee_id = '20000000-0000-0000-0000-000000000003'
 WHERE id = '10000000-0000-0000-0000-000000000001';
+
+-- Set HR Manager as head of HR department
+UPDATE departments
+SET head_employee_id = '20000000-0000-0000-0000-000000000001'
+WHERE id = '10000000-0000-0000-0000-000000000002';
 
 -- ─── Personal Infos ───────────────────────────────────────────────────────────
 INSERT INTO personal_infos (employee_id, phone, address, bank_account, emergency_contact, emergency_phone) VALUES
@@ -126,38 +171,149 @@ INSERT INTO payroll (employee_id, month, year, basic_salary, allowances, gross_s
 ON CONFLICT (employee_id, year, month) DO NOTHING;
 
 -- ─── Company Rules ────────────────────────────────────────────────────────────
-INSERT INTO company_rules (id, company_id, title, category, content, effective_date, is_active) VALUES
+INSERT INTO company_rules (id, company_id, title, category, content, metadata, effective_date, is_active) VALUES
     ('30000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000001',
         'Kebijakan Cuti Tahunan',
         'leave',
         'Karyawan tetap (permanent) berhak atas 12 hari cuti tahunan per tahun kalender. Cuti tahunan dapat diambil setelah karyawan melewati masa percobaan (probation period) selama 3 bulan. Pengajuan cuti harus dilakukan minimal 3 hari kerja sebelumnya melalui sistem HR, kecuali untuk keadaan darurat. Cuti yang tidak diambil dalam satu tahun kalender tidak dapat dibawa ke tahun berikutnya (tidak ada carry-over). Karyawan kontrak dan magang mendapat jatah cuti pro-rata sesuai durasi kontrak.',
+        '{"policy_key":"leave.annual_leave","case_type":"annual_leave","coverage_type":"entitlement","amount_limit":{"max_value":12,"unit":"day","period":"year"},"frequency_limit":null,"eligible_levels":["permanent","contract","intern"],"required_documents":[],"constraints":{"min_tenure_months":3,"carry_over_allowed":false,"pro_rata_levels":["contract","intern"],"request_notice_days":3}}'::jsonb,
         '2024-01-01', true),
     ('30000000-0000-0000-0000-000000000002', '00000000-0000-0000-0000-000000000001',
         'Kebijakan Cuti Sakit',
         'leave',
         'Karyawan berhak atas cuti sakit berbayar dengan syarat melampirkan surat keterangan dokter. Untuk ketidakhadiran 1-2 hari karena sakit, surat dokter dapat diserahkan maksimal H+2 setelah masuk kerja. Ketidakhadiran lebih dari 2 hari wajib disertai surat keterangan dokter yang diserahkan pada hari pertama sakit atau dikirimkan secara digital. Cuti sakit tidak mengurangi jatah cuti tahunan.',
+        '{"policy_key":"leave.sick_leave","case_type":"sick_leave","coverage_type":"entitlement","amount_limit":null,"frequency_limit":null,"eligible_levels":["permanent","contract","intern"],"required_documents":["surat dokter"],"constraints":{"digital_submission_allowed":true,"doctor_note_required_for_extended_absence":true}}'::jsonb,
         '2024-01-01', true),
     ('30000000-0000-0000-0000-000000000003', '00000000-0000-0000-0000-000000000001',
         'Kebijakan Work From Home (WFH)',
         'work_arrangement',
         'Karyawan diperbolehkan bekerja dari rumah (WFH) maksimal 2 hari per minggu, dengan persetujuan atasan langsung. Karyawan yang sedang dalam masa probation tidak diperkenankan WFH kecuali atas persetujuan khusus dari HR Manager. Pada hari WFH, karyawan wajib tetap dapat dihubungi dan hadir dalam meeting yang dijadwalkan. WFH tidak berlaku pada hari dengan kegiatan kantor wajib seperti all-hands meeting atau town hall.',
+        '{"policy_key":"work_arrangement.wfh","case_type":"wfh","coverage_type":"arrangement","amount_limit":null,"frequency_limit":{"max_count":2,"unit":"day","period":"week"},"eligible_levels":["permanent","contract","intern"],"required_documents":[],"constraints":{"excluded_levels":["probation"],"manager_approval_required":true,"blocked_event_keywords":["all-hands","town hall"]}}'::jsonb,
         '2024-06-01', true),
     ('30000000-0000-0000-0000-000000000004', '00000000-0000-0000-0000-000000000001',
         'Kebijakan Jam Kerja dan Keterlambatan',
         'attendance',
         'Jam kerja standar adalah 08:00 - 17:00 WIB, Senin sampai Jumat. Toleransi keterlambatan adalah 15 menit. Keterlambatan lebih dari 15 menit wajib dikompensasi dengan perpanjangan jam kerja di hari yang sama atau atas persetujuan atasan. Keterlambatan yang tidak dikomunikasikan lebih dari 3 kali dalam satu bulan akan menjadi catatan dalam evaluasi kinerja.',
+        '{"policy_key":"attendance.working_hours","case_type":"attendance","coverage_type":"compliance","amount_limit":null,"frequency_limit":{"max_count":3,"unit":"late_case","period":"month"},"eligible_levels":["permanent","contract","intern"],"required_documents":[],"constraints":{"lateness_tolerance_minutes":15}}'::jsonb,
         '2024-01-01', true),
     ('30000000-0000-0000-0000-000000000005', '00000000-0000-0000-0000-000000000001',
         'Kebijakan Gaji dan Kompensasi',
         'payroll',
         'Gaji dibayarkan setiap akhir bulan, selambat-lambatnya tanggal 28 setiap bulan. Komponen gaji terdiri dari gaji pokok, tunjangan tetap (transport dan makan), dan tunjangan variabel (lembur jika ada). Potongan wajib meliputi iuran BPJS Kesehatan (1% dari gaji pokok), iuran BPJS Ketenagakerjaan (2% dari gaji pokok), dan PPh 21 sesuai peraturan perpajakan yang berlaku. Slip gaji dikirimkan melalui email setiap bulan pada tanggal pembayaran gaji.',
+        '{"policy_key":"payroll.salary_compensation","case_type":"payroll","coverage_type":"schedule","amount_limit":null,"frequency_limit":{"max_count":1,"unit":"payment","period":"month"},"eligible_levels":["permanent","contract","intern"],"required_documents":[],"constraints":{"salary_payment_day_max":28,"payslip_delivery":"payment_day","fixed_allowances":["transport","makan"]}}'::jsonb,
+        '2024-01-01', true),
+    ('30000000-0000-0000-0000-000000000007', '00000000-0000-0000-0000-000000000001',
+        'Kebijakan Reimbursement Mental Health',
+        'benefit',
+        'Perusahaan memberikan reimbursement konsultasi psikolog atau layanan mental health online maksimal Rp 300.000 per sesi dan maksimal 6 sesi per tahun kalender. Klaim wajib dilampiri invoice atau receipt serta bukti bayar yang jelas. Reimbursement tidak mencakup layanan yang tidak terkait konsultasi profesional seperti subscription konten wellness.',
+        '{"policy_key":"benefit.mental_health_reimbursement","case_type":"mental_health","coverage_type":"reimbursement","amount_limit":{"max_value":300000,"unit":"idr","period":"session"},"frequency_limit":{"max_count":6,"unit":"session","period":"year"},"eligible_levels":["permanent","contract"],"required_documents":["invoice","receipt","bukti bayar"],"constraints":{"excluded_keywords":["subscription","wellness"],"requires_professional_service":true}}'::jsonb,
+        '2024-01-01', true),
+    ('30000000-0000-0000-0000-000000000008', '00000000-0000-0000-0000-000000000001',
+        'Kebijakan Reimbursement Optical',
+        'benefit',
+        'Perusahaan memberikan reimbursement kacamata atau optical maksimal Rp 750.000 per tahun kalender. Klaim wajib dilampiri kuitansi atau invoice pembelian. Reimbursement optical hanya berlaku untuk lensa, frame, atau paket kacamata dan tidak mencakup aksesoris non-medis.',
+        '{"policy_key":"benefit.optical_reimbursement","case_type":"optical","coverage_type":"reimbursement","amount_limit":{"max_value":750000,"unit":"idr","period":"year"},"frequency_limit":{"max_count":1,"unit":"claim","period":"year"},"eligible_levels":["permanent","contract"],"required_documents":["kuitansi","invoice"],"constraints":{"excluded_keywords":["aksesoris","non medis"]}}'::jsonb,
+        '2024-01-01', true),
+    ('30000000-0000-0000-0000-000000000009', '00000000-0000-0000-0000-000000000001',
+        'Kebijakan Reimbursement Medical Outpatient',
+        'benefit',
+        'Perusahaan memberikan reimbursement rawat jalan atau medical outpatient maksimal Rp 500.000 per kunjungan dan maksimal 10 klaim per tahun kalender. Klaim wajib dilampiri invoice atau receipt, bukti bayar, serta surat dokter atau resep bila ada tindakan medis. Reimbursement tidak mencakup vitamin, suplemen, atau medical check-up executive yang tidak direkomendasikan dokter.',
+        '{"policy_key":"benefit.medical_outpatient_reimbursement","case_type":"medical","coverage_type":"reimbursement","amount_limit":{"max_value":500000,"unit":"idr","period":"visit"},"frequency_limit":{"max_count":10,"unit":"claim","period":"year"},"eligible_levels":["permanent","contract"],"required_documents":["invoice","receipt","bukti bayar","surat dokter","resep"],"constraints":{"excluded_keywords":["vitamin","suplemen","medical check-up executive"]}}'::jsonb,
+        '2024-01-01', true),
+    ('30000000-0000-0000-0000-000000000010', '00000000-0000-0000-0000-000000000001',
+        'Kebijakan Tunjangan Komunikasi dan Internet',
+        'payroll',
+        'Perusahaan memberikan tunjangan komunikasi dan internet sebesar Rp 250.000 per bulan untuk karyawan tetap dan karyawan kontrak aktif. Tunjangan ini tidak berlaku untuk karyawan magang atau karyawan yang masih dalam masa probation. Tunjangan dibayarkan bersama payroll bulanan dan tidak memerlukan klaim manual.',
+        '{"policy_key":"payroll.communication_allowance","case_type":"allowance","coverage_type":"allowance","amount_limit":{"max_value":250000,"unit":"idr","period":"month"},"frequency_limit":{"max_count":1,"unit":"allowance","period":"month"},"eligible_levels":["permanent","contract"],"required_documents":[],"constraints":{"excluded_levels":["intern","probation"],"paid_with_payroll":true}}'::jsonb,
         '2024-01-01', true),
     ('30000000-0000-0000-0000-000000000006', '00000000-0000-0000-0000-000000000001',
         'Kebijakan Kode Etik dan Perilaku',
         'conduct',
         'Seluruh karyawan wajib menjaga integritas dan profesionalisme dalam bekerja. Dilarang melakukan tindakan diskriminasi, pelecehan, atau intimidasi dalam bentuk apapun di lingkungan kerja. Informasi rahasia perusahaan, termasuk data karyawan, data klien, dan strategi bisnis, wajib dijaga kerahasiaannya. Pelanggaran terhadap kode etik dapat berujung pada tindakan disipliner hingga pemutusan hubungan kerja.',
+        '{"policy_key":"conduct.code_of_conduct","case_type":"conduct","coverage_type":"governance","amount_limit":null,"frequency_limit":null,"eligible_levels":["permanent","contract","intern"],"required_documents":[],"constraints":{}}'::jsonb,
         '2024-01-01', true)
 ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO responsibility_routes (
+    id,
+    company_id,
+    topic_key,
+    department_id,
+    primary_employee_id,
+    alternate_employee_id,
+    recommended_channel,
+    preparation_checklist,
+    metadata,
+    is_active
+) VALUES
+    (
+        '40000000-0000-0000-0000-000000000001',
+        '00000000-0000-0000-0000-000000000001',
+        'recruiting',
+        '10000000-0000-0000-0000-000000000002',
+        '20000000-0000-0000-0000-000000000007',
+        '20000000-0000-0000-0000-000000000001',
+        'chat atau email internal recruiter / TA',
+        '["Siapkan nama kandidat dan posisi yang ingin direferensikan.", "Kalau ada CV, LinkedIn, atau ringkasan profil kandidat, siapkan juga sebelum menghubungi tim terkait."]'::jsonb,
+        '{"routing_type": "functional_owner"}'::jsonb,
+        true
+    ),
+    (
+        '40000000-0000-0000-0000-000000000002',
+        '00000000-0000-0000-0000-000000000001',
+        'payroll_benefits',
+        '10000000-0000-0000-0000-000000000002',
+        '20000000-0000-0000-0000-000000000006',
+        '20000000-0000-0000-0000-000000000005',
+        'chat atau email internal payroll / benefits',
+        '["Siapkan periode, nominal, atau jenis benefit yang ingin ditanyakan.", "Kalau ada bukti transaksi atau dokumen pendukung, siapkan juga sebelum menghubungi tim terkait."]'::jsonb,
+        '{"routing_type": "functional_owner"}'::jsonb,
+        true
+    ),
+    (
+        '40000000-0000-0000-0000-000000000003',
+        '00000000-0000-0000-0000-000000000001',
+        'people_partner',
+        '10000000-0000-0000-0000-000000000002',
+        '20000000-0000-0000-0000-000000000008',
+        '20000000-0000-0000-0000-000000000001',
+        'chat atau email internal HRBP / people partner',
+        '["Siapkan konteks tim, concern utama, dan outcome yang ingin kamu diskusikan.", "Kalau menyangkut karier atau internal move, jelaskan role saat ini dan arah role yang kamu tuju."]'::jsonb,
+        '{"routing_type": "functional_owner"}'::jsonb,
+        true
+    ),
+    (
+        '40000000-0000-0000-0000-000000000004',
+        '00000000-0000-0000-0000-000000000001',
+        'it_support',
+        '10000000-0000-0000-0000-000000000001',
+        '20000000-0000-0000-0000-000000000009',
+        '20000000-0000-0000-0000-000000000002',
+        'chat atau tiket internal IT support',
+        '["Siapkan nama sistem, perangkat, atau akun yang bermasalah.", "Kalau ada error message atau screenshot, siapkan juga untuk mempercepat triage."]'::jsonb,
+        '{"routing_type": "functional_owner"}'::jsonb,
+        true
+    ),
+    (
+        '40000000-0000-0000-0000-000000000005',
+        '00000000-0000-0000-0000-000000000001',
+        'hr_operations',
+        '10000000-0000-0000-0000-000000000002',
+        '20000000-0000-0000-0000-000000000005',
+        '20000000-0000-0000-0000-000000000001',
+        'chat atau email internal tim HR operations',
+        '["Siapkan ringkasan topik atau issue yang ingin kamu bahas.", "Kalau menyangkut periode tertentu, sebutkan juga bulan atau tanggal yang relevan."]'::jsonb,
+        '{"routing_type": "functional_owner"}'::jsonb,
+        true
+    )
+ON CONFLICT (company_id, topic_key) DO UPDATE SET
+    department_id = EXCLUDED.department_id,
+    primary_employee_id = EXCLUDED.primary_employee_id,
+    alternate_employee_id = EXCLUDED.alternate_employee_id,
+    recommended_channel = EXCLUDED.recommended_channel,
+    preparation_checklist = EXCLUDED.preparation_checklist,
+    metadata = EXCLUDED.metadata,
+    is_active = EXCLUDED.is_active;
 
 INSERT INTO classifier_keyword_overrides (
     company_id,
@@ -299,8 +455,96 @@ INSERT INTO intent_examples (
     ),
     (
         '00000000-0000-0000-0000-000000000001',
+        'company_policy',
+        'saya tadi ke psikolog online 150 ribu bisa reimburse nggak',
+        'id',
+        3,
+        true
+    ),
+    (
+        '00000000-0000-0000-0000-000000000001',
+        'company_policy',
+        'kalau reimburse kacamata limit saya berapa',
+        'id',
+        3,
+        true
+    ),
+    (
+        '00000000-0000-0000-0000-000000000001',
+        'company_policy',
+        'saya masih probation 2 bulan bisa ambil cuti tahunan nggak',
+        'id',
+        3,
+        true
+    ),
+    (
+        '00000000-0000-0000-0000-000000000001',
+        'company_policy',
+        'kalau gaji dibayar tanggal 30 masih sesuai policy nggak',
+        'id',
+        3,
+        true
+    ),
+    (
+        '00000000-0000-0000-0000-000000000001',
+        'company_policy',
+        'saya magang apakah dapat tunjangan internet 250 ribu per bulan',
+        'id',
+        3,
+        true
+    ),
+    (
+        '00000000-0000-0000-0000-000000000001',
+        'company_policy',
+        'rawat jalan 400 ribu bisa claim nggak',
+        'id',
+        3,
+        true
+    ),
+    (
+        '00000000-0000-0000-0000-000000000001',
         'company_structure',
         'siapa kepala departemen hr',
+        'id',
+        2,
+        true
+    ),
+    (
+        '00000000-0000-0000-0000-000000000001',
+        'company_structure',
+        'kalau bingung administrasi atau hr harus tanya siapa',
+        'id',
+        3,
+        true
+    ),
+    (
+        '00000000-0000-0000-0000-000000000001',
+        'company_structure',
+        'saya karyawan baru harus hubungi siapa',
+        'id',
+        3,
+        true
+    ),
+    (
+        '00000000-0000-0000-0000-000000000001',
+        'company_structure',
+        'kalau mau refer temen harus ke siapa',
+        'id',
+        3,
+        true
+    ),
+    (
+        '00000000-0000-0000-0000-000000000001',
+        'company_structure',
+        'kalau mau nanya payroll ke siapa ya',
+        'id',
+        2,
+        true
+    ),
+    (
+        '00000000-0000-0000-0000-000000000001',
+        'company_structure',
+        'kalau ada issue teknis internal harus ke siapa dulu',
         'id',
         2,
         true
@@ -359,7 +603,7 @@ INSERT INTO agent_capabilities (
         'policy_lookup',
         false,
         true,
-        '["apa aturan carry over cuti", "siapa kepala departemen hr", "bagaimana kebijakan wfh"]'::jsonb,
+        '["apa aturan carry over cuti", "siapa kepala departemen hr", "kalau bingung administrasi atau hr harus tanya siapa", "kalau mau refer temen harus ke siapa", "kalau ada issue teknis internal harus ke siapa dulu", "saya tadi ke psikolog online 150 ribu bisa reimburse nggak", "kalau reimburse kacamata limit saya berapa", "saya masih probation 2 bulan bisa ambil cuti tahunan nggak", "kalau gaji dibayar tanggal 30 masih sesuai policy nggak", "saya magang apakah dapat tunjangan internet 250 ribu per bulan", "rawat jalan 400 ribu bisa claim nggak"]'::jsonb,
         true
     ),
     (
@@ -396,6 +640,26 @@ INSERT INTO rules (id, company_id, name, description, trigger, intent_key, sensi
         'Create a manual review counseling task when sensitive wellbeing signals are detected.',
         'sensitivity_detected',
         'employee_wellbeing_concern',
+        'high',
+        true
+    ),
+    (
+        '60000000-0000-0000-0000-000000000003',
+        '00000000-0000-0000-0000-000000000001',
+        'Unsafe workplace escalation',
+        'Create a manual review escalation task when an unsafe workplace report is detected.',
+        'sensitivity_detected',
+        'sensitive_unsafe_workplace_case',
+        'high',
+        true
+    ),
+    (
+        '60000000-0000-0000-0000-000000000004',
+        '00000000-0000-0000-0000-000000000001',
+        'Harassment escalation',
+        'Create a manual review escalation task when harassment or discrimination is reported.',
+        'sensitivity_detected',
+        'sensitive_harassment_case',
         'high',
         true
     )
@@ -442,6 +706,36 @@ INSERT INTO rule_actions (
             "assigned_role": "hr_admin",
             "due_at": "2026-04-07T09:00:00Z",
             "note": "Review the conversation details before any external follow-up."
+        }$$::jsonb
+    ),
+    (
+        '61000000-0000-0000-0000-000000000003',
+        '60000000-0000-0000-0000-000000000003',
+        'escalation',
+        'Open unsafe workplace review',
+        'Sensitive workplace safety concern detected and queued for manual HR review.',
+        'high',
+        ARRAY['manual_review']::delivery_channel_enum[],
+        $${
+            "reason": "Unsafe workplace report requires manual review.",
+            "target_role": "hr_admin",
+            "escalation_level": 2,
+            "note": "Review the report and triage the safest next step before any outbound follow-up."
+        }$$::jsonb
+    ),
+    (
+        '61000000-0000-0000-0000-000000000004',
+        '60000000-0000-0000-0000-000000000004',
+        'escalation',
+        'Open harassment report review',
+        'Sensitive harassment or discrimination report detected and queued for manual HR review.',
+        'high',
+        ARRAY['manual_review']::delivery_channel_enum[],
+        $${
+            "reason": "Harassment or discrimination report requires manual review.",
+            "target_role": "hr_admin",
+            "escalation_level": 3,
+            "note": "Review the report, preserve confidentiality, and decide the formal handling path."
         }$$::jsonb
     )
 ON CONFLICT (id) DO NOTHING;

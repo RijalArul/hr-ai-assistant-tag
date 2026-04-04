@@ -75,12 +75,69 @@ class CustomWebhookPayload(BaseModel):
     target_reference: str | None = Field(default=None, max_length=255)
 
 
+# ---------------------------------------------------------------------------
+# Session E – Conversational Request Intake (F.1)
+# Each model captures the fields required before a formal request can be
+# created.  Nullable fields represent information that must be collected via
+# missing-info follow-up before the action is considered ready to process.
+# ---------------------------------------------------------------------------
+
+class LeaveRequestPayload(BaseModel):
+    type: Literal["leave_request"] = "leave_request"
+    leave_type: str = Field(min_length=2, max_length=80)
+    start_date: str | None = Field(
+        default=None,
+        description="ISO-8601 date string (YYYY-MM-DD). Required before processing.",
+    )
+    end_date: str | None = Field(
+        default=None,
+        description="ISO-8601 date string (YYYY-MM-DD). Required before processing.",
+    )
+    reason: str | None = Field(default=None, max_length=500)
+    note: str | None = Field(default=None, max_length=500)
+
+    @model_validator(mode="after")
+    def validate_date_range(self) -> LeaveRequestPayload:
+        if self.start_date and self.end_date and self.start_date > self.end_date:
+            raise ValueError("start_date must be before end_date.")
+        return self
+
+
+class ReimbursementRequestPayload(BaseModel):
+    type: Literal["reimbursement_request"] = "reimbursement_request"
+    category: str = Field(min_length=2, max_length=80)
+    amount: float | None = Field(
+        default=None,
+        ge=0,
+        description="Claimed amount in IDR. Required before processing.",
+    )
+    expense_date: str | None = Field(
+        default=None,
+        description="ISO-8601 date of the expense (YYYY-MM-DD). Required before processing.",
+    )
+    description: str | None = Field(default=None, max_length=500)
+    note: str | None = Field(default=None, max_length=500)
+
+
+class ProfileUpdateRequestPayload(BaseModel):
+    type: Literal["profile_update_request"] = "profile_update_request"
+    fields_to_update: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Key-value pairs of profile fields and their new values.",
+    )
+    reason: str | None = Field(default=None, max_length=500)
+    note: str | None = Field(default=None, max_length=500)
+
+
 ActionPayload = Annotated[
     DocumentGenerationPayload
     | CounselingTaskPayload
     | FollowupChatPayload
     | EscalationPayload
-    | CustomWebhookPayload,
+    | CustomWebhookPayload
+    | LeaveRequestPayload
+    | ReimbursementRequestPayload
+    | ProfileUpdateRequestPayload,
     Field(discriminator="type"),
 ]
 
@@ -90,6 +147,9 @@ ACTION_TYPE_TO_PAYLOAD_MODEL = {
     ActionType.FOLLOWUP_CHAT: FollowupChatPayload,
     ActionType.ESCALATION: EscalationPayload,
     ActionType.CUSTOM_WEBHOOK: CustomWebhookPayload,
+    ActionType.LEAVE_REQUEST: LeaveRequestPayload,
+    ActionType.REIMBURSEMENT_REQUEST: ReimbursementRequestPayload,
+    ActionType.PROFILE_UPDATE_REQUEST: ProfileUpdateRequestPayload,
 }
 
 
@@ -103,6 +163,10 @@ class ActionCreateRequest(BaseModel):
                 "priority": "medium",
                 "sensitivity": "low",
                 "delivery_channels": ["email", "in_app"],
+                "suggested_pic": "Payroll Team",
+                "suggested_next_action": "Review payroll record and approve document generation.",
+                "sla_hours": 24,
+                "escalation_rule": "Escalate to HR Manager if not completed in 24 hours.",
                 "payload": {
                     "type": "document_generation",
                     "document_type": "salary_slip",
@@ -125,6 +189,10 @@ class ActionCreateRequest(BaseModel):
         default_factory=lambda: [DeliveryChannel.IN_APP],
         min_length=1,
     )
+    suggested_pic: str | None = Field(default=None, max_length=100)
+    suggested_next_action: str | None = Field(default=None, max_length=500)
+    sla_hours: int | None = Field(default=None, ge=1)
+    escalation_rule: str | None = Field(default=None, max_length=500)
     payload: ActionPayload
     metadata: dict[str, Any] = Field(default_factory=dict)
 
@@ -144,6 +212,10 @@ class ActionUpdateRequest(BaseModel):
     sensitivity: SensitivityLevel | None = None
     status: ActionStatus | None = None
     delivery_channels: list[DeliveryChannel] | None = Field(default=None, min_length=1)
+    suggested_pic: str | None = Field(default=None, max_length=100)
+    suggested_next_action: str | None = Field(default=None, max_length=500)
+    sla_hours: int | None = Field(default=None, ge=1)
+    escalation_rule: str | None = Field(default=None, max_length=500)
     metadata: dict[str, Any] | None = None
 
     @field_validator("delivery_channels")
@@ -227,6 +299,10 @@ class ActionResponse(BaseModel):
                 "priority": "medium",
                 "sensitivity": "low",
                 "delivery_channels": ["email", "in_app"],
+                "suggested_pic": "Payroll Team",
+                "suggested_next_action": "Review payroll record and approve document generation.",
+                "sla_hours": 24,
+                "escalation_rule": "Escalate to HR Manager if not completed in 24 hours.",
                 "payload": {
                     "type": "document_generation",
                     "document_type": "salary_slip",
@@ -256,6 +332,10 @@ class ActionResponse(BaseModel):
     priority: ActionPriority
     sensitivity: SensitivityLevel
     delivery_channels: list[DeliveryChannel]
+    suggested_pic: str | None = None
+    suggested_next_action: str | None = None
+    sla_hours: int | None = None
+    escalation_rule: str | None = None
     payload: ActionPayload
     execution_result: dict[str, Any] | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -308,6 +388,10 @@ class RuleActionConfig(BaseModel):
         default_factory=lambda: [DeliveryChannel.IN_APP],
         min_length=1,
     )
+    suggested_pic_template: str | None = Field(default=None, max_length=100)
+    suggested_next_action_template: str | None = Field(default=None, max_length=500)
+    sla_hours: int | None = Field(default=None, ge=1)
+    escalation_rule_template: str | None = Field(default=None, max_length=500)
     payload_template: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("delivery_channels")

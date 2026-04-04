@@ -97,13 +97,18 @@ Expected errors:
 ## PATCH /api/v1/actions/{id}
 
 Purpose:
-Updates action metadata or status.
+Updates action metadata or non-terminal status.
 
 Auth:
 Bearer token required.
 
 Role requirement:
 - `hr_admin`
+
+Notes:
+- gunakan route ini untuk perubahan manual seperti `ready`, `in_progress`, atau `cancelled`
+- hasil terminal seperti `completed` mengikuti jalur `POST /api/v1/actions/{id}/execute`
+- status `failed` saat ini terutama dicatat oleh execution path ketika runtime gagal
 
 Example request:
 
@@ -131,6 +136,10 @@ Bearer token required.
 
 Role requirement:
 - `hr_admin`
+
+Notes:
+- route ini dapat menyelesaikan action yang masih `pending`, `ready`, atau sudah lebih dulu di-claim sebagai `in_progress`
+- delivery metadata, execution log, dan hasil terminal disimpan lewat jalur ini agar konsisten
 
 Example request:
 

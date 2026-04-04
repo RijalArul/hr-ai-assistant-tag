@@ -7,14 +7,16 @@ current session user. Employee can only see their own data.
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import Callable
 
 from app.guardrails.models import PiiMaskEvent
 
 
 # ─── PII Patterns ─────────────────────────────────────────────────────────────
 
-_PII_PATTERNS: list[tuple[str, re.Pattern[str], str]] = [
+Masker = Callable[[str], str]
+
+_PII_PATTERNS: list[tuple[str, re.Pattern[str], Masker]] = [
     # (pii_type, pattern, mask_template)
     (
         "nik",

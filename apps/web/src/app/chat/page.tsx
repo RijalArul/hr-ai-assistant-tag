@@ -3,7 +3,13 @@
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { api, clearToken } from "@/lib/api";
-import type { Conversation, ConversationExchangeResponse, Message, Session } from "@/lib/api";
+import type {
+  Conversation,
+  ConversationExchangeResponse,
+  Message,
+  MessageAttachment,
+  Session,
+} from "@/lib/api";
 
 const BLUE = "#2563eb";
 const BLUE_DARK = "#1d4ed8";
@@ -23,6 +29,36 @@ function initials(name: string): string {
 function getFirstName(email: string): string {
   const local = email.split("@")[0];
   return local.split(/[._]/).map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
+}
+
+function isGeneratedDocumentAttachment(attachment: MessageAttachment): boolean {
+  return (
+    attachment.type === "generated_document" ||
+    typeof attachment.download_url === "string"
+  );
+}
+
+function getGeneratedDocumentAttachments(msg: Message): MessageAttachment[] {
+  return msg.attachments.filter(isGeneratedDocumentAttachment);
+}
+
+function renderMessageContent(content: string): React.ReactNode {
+  return content.split(/(https?:\/\/[^\s]+)/g).map((part, index) => {
+    if (/^https?:\/\/[^\s]+$/.test(part)) {
+      return (
+        <a
+          key={`${part}-${index}`}
+          href={part}
+          target="_blank"
+          rel="noreferrer"
+          style={{ color: BLUE, textDecoration: "underline", fontWeight: 500 }}
+        >
+          {part}
+        </a>
+      );
+    }
+    return <span key={`${part}-${index}`}>{part}</span>;
+  });
 }
 
 // ─── Avatars ───────────────────────────────────────────────────────────────
@@ -354,6 +390,84 @@ function Overlay({ children, onClose }: { children: React.ReactNode; onClose: ()
 }
 
 // ─── Message bubble ────────────────────────────────────────────────────────
+function GeneratedDocumentCard({ attachment }: { attachment: MessageAttachment }) {
+  const period =
+    attachment.period && typeof attachment.period.label === "string"
+      ? attachment.period.label
+      : null;
+  const fileName =
+    typeof attachment.file_name === "string" && attachment.file_name
+      ? attachment.file_name
+      : "generated-document.pdf";
+  const downloadUrl =
+    typeof attachment.download_url === "string" && attachment.download_url
+      ? attachment.download_url
+      : null;
+  const expiresAt =
+    typeof attachment.download_url_expires_at === "string" &&
+    attachment.download_url_expires_at
+      ? new Date(attachment.download_url_expires_at).toLocaleString()
+      : null;
+
+  return (
+    <div
+      style={{
+        marginTop: 10,
+        background: "#f8fafc",
+        border: "1px solid #dbeafe",
+        borderRadius: 14,
+        padding: "12px 14px",
+        boxShadow: "0 1px 2px rgba(37,99,235,0.08)",
+      }}
+    >
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center" }}>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: "#1d4ed8", marginBottom: 4 }}>
+            Generated PDF
+          </div>
+          <div style={{ fontSize: 13, fontWeight: 600, color: "#111827", wordBreak: "break-word" }}>
+            {fileName}
+          </div>
+          {period && (
+            <div style={{ fontSize: 12, color: "#475569", marginTop: 2 }}>
+              Period: {period}
+            </div>
+          )}
+          {expiresAt && (
+            <div style={{ fontSize: 11, color: "#64748b", marginTop: 4 }}>
+              Link expires: {expiresAt}
+            </div>
+          )}
+          {!downloadUrl && (
+            <div style={{ fontSize: 11, color: "#b45309", marginTop: 4 }}>
+              Download URL is not available yet.
+            </div>
+          )}
+        </div>
+        {downloadUrl && (
+          <a
+            href={downloadUrl}
+            target="_blank"
+            rel="noreferrer"
+            style={{
+              flexShrink: 0,
+              padding: "8px 12px",
+              borderRadius: 10,
+              background: BLUE,
+              color: "#fff",
+              textDecoration: "none",
+              fontSize: 12,
+              fontWeight: 600,
+            }}
+          >
+            Download
+          </a>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function MessageBubble({
   msg,
   userInitials,
@@ -369,6 +483,7 @@ function MessageBubble({
 }) {
   const isUser = msg.role === "user";
   const isGuardrail = msg.metadata?.guardrail_triggered as boolean;
+  const generatedDocuments = isUser ? [] : getGeneratedDocumentAttachments(msg);
 
   if (isUser) {
     return (
@@ -395,13 +510,19 @@ function MessageBubble({
           fontSize: 14, lineHeight: 1.6, color: "#111827", whiteSpace: "pre-wrap",
           boxShadow: "0 1px 3px rgba(0,0,0,0.06)",
         }}>
-          {msg.content}
+          {renderMessageContent(msg.content)}
           {isGuardrail && (
             <span style={{ display: "block", fontSize: 11, color: "#92400e", background: "#fef3c7", padding: "2px 8px", borderRadius: 4, marginTop: 6, width: "fit-content" }}>
               ⚠ Filtered by safety system
             </span>
           )}
         </div>
+        {generatedDocuments.map((attachment, index) => (
+          <GeneratedDocumentCard
+            key={`${msg.id}-generated-document-${index}`}
+            attachment={attachment}
+          />
+        ))}
         {isLast && !isGuardrail && <ActionButtons onOpen={onOpenModal} />}
         {isLast && !isGuardrail && <QuickReplies onSend={onQuickReply} />}
       </div>

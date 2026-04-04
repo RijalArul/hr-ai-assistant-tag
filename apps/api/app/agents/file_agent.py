@@ -69,8 +69,9 @@ async def run_file_agent(attachments: list[AttachmentInput]) -> FileAgentResult:
                     detail["error"] = "File not found."
                 elif attachment.suffix in GEMINI_FIRST_SUFFIXES:
                     gemini_result = await extract_file_with_gemini(path)
-                    if gemini_result.is_success:
-                        extracted_text = gemini_result.text
+                    gemini_text = gemini_result.text
+                    if gemini_result.is_success and isinstance(gemini_text, str):
+                        extracted_text = gemini_text
                         detail["source"] = "gemini"
                         detail["text_length"] = len(extracted_text)
                     elif attachment.suffix == ".pdf":

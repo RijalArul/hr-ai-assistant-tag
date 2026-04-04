@@ -121,12 +121,18 @@ Important response fields:
 - `orchestration.context.conversation_grounding`
 - `orchestration.context.fallback_ladder`
 
+Generated-document note:
+- when a low-risk payslip request is auto-executed successfully, the assistant response now includes the download link in two places:
+- `assistant_message.content` contains a human-readable `Link download: ...` line
+- `assistant_message.attachments[]` contains a structured `generated_document` object with fields such as `file_name`, `mime_type`, `period`, `download_url`, and `download_url_expires_at`
+
 Testing note:
 - this route is the main Phase 4 surface for end-to-end testing of Phase 3 intent, sensitivity, file handling, and routing behavior
 - for `payroll_document_request`, Phase 4 now also checks enabled Phase 2 rules and can create linked `document_generation` actions automatically
 - document actions are now gated by explicit execution intent, so exploratory questions about payslips should not auto-create actions
 - exploratory phrasings such as `bagaimana download payslip saya` or `apakah payslip bisa di-email` are intentionally treated as non-executable until the user asks explicitly
 - low-risk payslip requests are auto-executed internally, so the returned `triggered_actions` entry can already contain a generated PDF reference inside `execution_result.document`
+- the assistant message itself also mirrors that generated-document reference through `assistant_message.attachments`, so chat clients do not need to parse `triggered_actions` just to show the file link
 - if the requested payroll period is unavailable, the conversation should still return `200 OK`; the action can remain pending with an explanatory note instead of breaking the whole exchange
 - short referential follow-ups such as "yang tadi" can now be grounded using recent conversation history before routing
 - short standalone questions such as `berapa sisa cuti saya?` stay ungrounded even inside an existing conversation because they already contain enough explicit intent on their own

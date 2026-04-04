@@ -61,7 +61,12 @@ async def check_abuse(
 
     Returns (is_cooldown_active, event_type | None, action_taken).
     """
-    redis = get_redis()
+    try:
+        redis = get_redis()
+    except RuntimeError:
+        if _is_gibberish(message):
+            return False, "abuse_warned", "warned"
+        return False, None, "allowed"
     now = time.time()
 
     # Check if in cooldown

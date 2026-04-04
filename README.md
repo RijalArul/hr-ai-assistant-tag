@@ -1,8 +1,8 @@
 # HR.ai
 
-**Conversational HR support platform with structured follow-up actions.**
+**AI-powered employee support and HR operations platform.**
 
-HR.ai helps employees get instant HR answers through a chat interface while automatically turning resolved conversations into structured follow-up actions for HR teams. The platform is designed as an open API that can integrate with an existing HRIS through REST APIs and webhooks.
+HR.ai helps employees ask HR questions, understand company policy in context, find the right next step, and turn eligible requests into structured follow-up actions for HR teams. The platform is designed as an open API that can integrate with an existing HRIS through REST APIs and webhooks.
 
 > Core principle: **neutral, factual, and bridge-oriented** — HR.ai is not meant to side with either the employee or the company.
 
@@ -15,8 +15,10 @@ HR.ai is built for HR support scenarios where employees need fast answers, but o
 At a high level, HR.ai:
 - answers employee HR questions through a conversational interface
 - retrieves structured HR data when needed
-- classifies intent and sensitivity
-- generates follow-up actions for HR teams
+- gives actionable guidance on who to contact and what to prepare
+- reasons over company policy for case-based questions
+- classifies intent, request category, response mode, and sensitivity
+- turns eligible conversations into structured follow-up actions for HR teams
 - can auto-complete selected low-risk self-service documents such as payslips
 - delivers execution results through configurable channels such as email, webhook, in-app notification, or manual review
 
@@ -31,12 +33,13 @@ The product direction supports:
 
 Traditional HR support is often fragmented across chat messages, policy documents, HRIS screens, and manual follow-up. HR.ai is designed to close that gap by combining:
 
-- **conversational access** for employees
-- **structured action handling** for HR teams
+- **conversational access and self-service intake** for employees
+- **contextual guidance and policy reasoning** for case-based questions
+- **structured workflow orchestration** for HR teams
 - **API-first integration** for IT teams
 - **sensitive-case guardrails** for higher-risk workflows
 
-This makes HR.ai more than a chatbot. It is intended to be an operational layer between employees, HR teams, and HRIS data.
+This makes HR.ai more than a chatbot. It is intended to be an operational layer between employees, HR teams, company policy, and HRIS data.
 
 ---
 
@@ -66,26 +69,25 @@ Responsible for operational control:
 
 HR.ai is designed around four functional layers:
 
-1. **Conversation AI**
-   - natural-language dialogue
-   - intent classification
-   - sensitivity detection
-   - employee-specific HR data retrieval
+1. **Employee Support Layer**
+   - employee chat and self-service entrypoint
+   - structured HR data lookup
+   - company navigation and next-step guidance
 
-2. **Action Engine**
-   - converts resolved conversations into structured follow-up actions
-   - supports document generation, counseling tasks, follow-up chat, escalation, and custom webhook triggers
+2. **Reasoning Layer**
+   - intent and sensitivity assessment
+   - request-category and response-mode resolution
+   - policy reasoning and retrieval planning
 
-3. **API & Integration**
-   - open REST API
-   - webhook event bus
-   - HRIS connectors
-   - post-execution delivery engine
+3. **HR Operations Layer**
+   - action creation and execution
+   - delivery routing, manual review, and follow-up tracking
+   - queue-ready outputs for HR teams
 
-4. **UI Layer**
-   - employee chat interface
-   - HR admin dashboard
-   - optional embedded/widget mode
+4. **Trust & Integration Layer**
+   - trusted session context and auth
+   - API, webhooks, connectors, cache, and storage
+   - guardrails and audit-oriented boundaries
 
 ---
 
@@ -93,9 +95,23 @@ HR.ai is designed around four functional layers:
 
 The current MVP direction is intentionally pragmatic:
 
-- employee interaction starts from a **chat-based interface**, with the early decision summary centering on a **Discord bot** approach for employee-initiated conversations
-- the broader product direction also supports **open API**, **hosted UI**, and **headless integration**
+- employee interaction still starts from a **chat-based interface**, with the early MVP centering on a **Discord bot** path for employee-initiated conversations
+- the broader product direction already targets **employee support**, **policy reasoning**, and **HR workflow orchestration**, not only chat Q&A
+- the platform also supports **open API**, **hosted UI**, and **headless integration**
 - the system avoids unnecessary platform complexity during MVP while keeping the architecture expandable later
+
+---
+
+## Capability Blueprint
+
+Current product direction can be summarized as four capability pillars:
+
+- **Employee support**: answer questions, surface personal data safely, guide employees to the right PIC or channel, and capture conversational requests.
+- **Policy reasoning**: interpret company policy against a concrete employee case and expose outcomes such as `eligible`, `not_eligible`, or `needs_review` where appropriate.
+- **Workflow orchestration**: turn eligible conversations into structured actions, execute low-risk automation, and hand off higher-risk work to HR teams.
+- **Governance and trust**: enforce trusted session scoping, sensitivity guardrails, auditability, and delivery controls.
+
+For a concise handoff doc covering capability matrix, glossary, response modes, and module boundaries, see `docs/architecture/phase-7-product-capability-blueprint-id.md`.
 
 ---
 
@@ -125,13 +141,24 @@ This keeps personal HR data precise, queryable, and safer than forcing everythin
 
 ---
 
+## Module Boundaries
+
+The current repository keeps ownership split this way:
+
+- **Employee Support Layer** owns employee-facing conversation flow and answer composition. Today this is centered on `orchestrator`, `hr-data-agent`, `company-agent`, `file-agent`, and the conversations API/service.
+- **Reasoning Layer** owns classification, semantic retrieval, policy reasoning, and response-mode resolution. Today this is centered on `agent_architecture.py`, `orchestrator.py`, `company_agent.py`, `semantic_router.py`, and `embeddings.py`.
+- **HR Operations Layer** owns rule-driven actions, execution lifecycle, delivery, and manual-review boundaries. Today this is centered on `action_engine.py`, the actions/rules/webhooks APIs, and conversation-triggered action linkage.
+- **Trust & Integration Layer** owns auth/session, guardrails, cache, storage, connectors, and external delivery surfaces. It supports the three layers above but does not allow the LLM to choose identity boundaries.
+
+---
+
 ## Agent Architecture
 
 HR.ai uses a focused 4-agent design with one orchestrator:
 
 ### 1. Orchestrator
 - primary entry point for all user messages
-- analyzes intent
+- analyzes intent, request category, response mode, and sensitivity
 - routes requests
 - synthesizes final response
 
@@ -140,7 +167,7 @@ HR.ai uses a focused 4-agent design with one orchestrator:
 - used for personal payroll, attendance, leave, profile, and related HR topics
 
 ### 3. company-agent
-- handles company structure and company rule retrieval
+- handles company structure, company rule retrieval, contact guidance, and early policy reasoning
 - used for organisational and policy-level questions
 
 ### 4. file-agent
@@ -282,10 +309,13 @@ The repository is no longer only a roadmap skeleton. The current implemented sta
 
 - **Phase 1**: JWT auth, trusted session scoping, database wiring, and cache foundation are in place.
 - **Phase 2**: action contracts, rules, webhooks, execution flow, and delivery queue records are implemented.
-- **Phase 3**: orchestrator, `hr-data-agent`, `company-agent`, `file-agent`, semantic intent retrieval, and Stage 2 `agent_capabilities` routing are implemented.
+- **Phase 3**: orchestrator, `hr-data-agent`, `company-agent`, `file-agent`, request-category / response-mode resolution, semantic intent retrieval, and Stage 2 `agent_capabilities` routing are implemented.
 - **Phase 4**: conversations API, linked conversation actions, and Phase 3 integration through public endpoints are implemented.
+- **Phase 5**: employee web chat plus baseline HR Admin surfaces for actions, rules, guardrails, and action detail are available; Discord bot wiring and richer HR operations triage remain partial.
 
 Known current MVP behavior:
+- company guidance can recommend primary or alternative PICs, a suggested channel, and a preparation checklist for supported topics.
+- initial policy reasoning can already return `eligible`, `not_eligible`, or `needs_review` for the current reimbursement slice.
 - `POST /conversations/{id}/messages` can create `triggered_actions` when a matching Phase 2 rule fires.
 - payslip requests can create and auto-execute a `document_generation` action when the request is low-risk.
 - exploratory payslip questions such as "how do I download/email my payslip?" stay in conversation mode until the user asks explicitly for execution.
@@ -349,6 +379,8 @@ Current docs for implemented endpoints:
 - Workflow guide (ID): `docs/architecture/phase-3-workflow-id.md`
 - Semantic routing design (ID): `docs/architecture/phase-3-semantic-routing-id.md`
   - Includes Stage 1 semantic intent retrieval and Stage 2 `agent_capabilities` routing
+- Capability blueprint (ID): `docs/architecture/phase-7-product-capability-blueprint-id.md`
+- Functional upgrade plan (ID): `docs/architecture/phase-7-hr-consultant-functional-upgrade-id.md`
 - Postman combined collection: `docs/postman/hr-ai-phase-1.postman_collection.json`
 - Postman module collection - auth: `docs/postman/modules/auth.postman_collection.json`
 - Postman module collection - health: `docs/postman/modules/health.postman_collection.json`
@@ -399,9 +431,8 @@ A minimal integration flow is expected to look like this:
 At runtime, the intended flow is roughly:
 
 ```text
-Employee -> Chat Interface -> Conversation AI -> Tool / Connector Access
-        -> Intent + Sensitivity Classification -> Action Engine
-        -> Delivery Layer / HR Admin Review / External Webhook
+Employee -> Chat Interface / API -> Employee Support Layer -> Reasoning Layer
+        -> HR Operations Layer -> Delivery / HR Admin Review / External Webhook
 ```
 
 ---
@@ -597,12 +628,12 @@ HR.ai is meant to be useful, safe, and operationally realistic first.
 ## Planned / Post-MVP Areas
 
 Likely next areas after the initial build:
-- final FastAPI route design
-- HR Admin dashboard refinement
-- demo and seed data strategy
-- notification system for pending actions
+- richer company navigation coverage and responsibility routing
+- deeper policy metadata and deterministic policy reasoning
+- conversational request intake beyond the current document slice
+- sensitive response templates and escalation refinement
+- HR Admin dashboard, queue, analytics, and governance surfaces
 - optional MCP support for admin-side natural language query use cases
-- broader RAG coverage if the knowledge base expands
 
 ---
 
@@ -688,8 +719,8 @@ The core goal of Phase 2 is consistency and safe downstream handling. Every acti
 - [ ] **Testing:** End-to-end test of the chat -> intent -> agent -> action -> delivery flow.
 
 ### Phase 6: Post-MVP / Backlog
-- [ ] **HR Admin Dashboard:** Build Next.js UI for reviewing actions and managing rules.
-- [ ] **Seed Data:** Create dummy HRIS data for testing/demo purposes.
+- [x] **HR Admin Dashboard (Baseline):** Next.js surfaces for reviewing actions, action detail, rules, and guardrails are available; richer triage and analytics are still partial.
+- [x] **Seed Data:** Dummy HRIS/demo data and routing seed are available for local testing.
 - [ ] **Notification System:** Implement scheduled alerts for pending manual reviews.
 
 ---

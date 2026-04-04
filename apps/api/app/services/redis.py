@@ -1,3 +1,5 @@
+from inspect import isawaitable
+
 import redis.asyncio as aioredis
 
 from app.core.config import get_settings
@@ -20,7 +22,9 @@ async def init_redis() -> None:
         encoding="utf-8",
         decode_responses=True,
     )
-    await redis_client.ping()
+    ping_result = redis_client.ping()
+    if isawaitable(ping_result):
+        await ping_result
 
 
 async def close_redis() -> None:
