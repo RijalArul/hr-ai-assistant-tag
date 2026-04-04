@@ -33,6 +33,13 @@ def _default_config(company_id: str) -> GuardrailConfig:
     return GuardrailConfig(company_id=company_id)
 
 
+def _get_redis_safe():
+    try:
+        return get_redis()
+    except RuntimeError:
+        return None
+
+
 async def load_config(
     db: AsyncSession,
     company_id: str,
@@ -41,16 +48,17 @@ async def load_config(
 
     Redis cache → DB → defaults.
     """
-    redis = get_redis()
+    redis = _get_redis_safe()
     cache_key = _cache_key(company_id)
 
-    cached = await redis.get(cache_key)
-    if cached:
-        try:
-            data = json.loads(cached)
-            return GuardrailConfig.model_validate(data)
-        except Exception:
-            pass
+    if redis is not None:
+        cached = await redis.get(cache_key)
+        if cached:
+            try:
+                data = json.loads(cached)
+                return GuardrailConfig.model_validate(data)
+            except Exception:
+                pass
 
     # Try DB
     try:
@@ -67,7 +75,8 @@ async def load_config(
             config_data["company_id"] = company_id
             config_data["updated_at"] = row[1].isoformat() if row[1] else None
             config = GuardrailConfig.model_validate(config_data)
-            await redis.setex(cache_key, _CACHE_TTL, config.model_dump_json())
+            if redis is not None:
+                await redis.setex(cache_key, _CACHE_TTL, config.model_dump_json())
             return config
     except Exception:
         pass
@@ -96,8 +105,9 @@ async def save_config(
     )
     await db.commit()
 
-    redis = get_redis()
-    await redis.delete(_cache_key(company_id))
+    redis = _get_redis_safe()
+    if redis is not None:
+        await redis.delete(_cache_key(company_id))
 
     config.updated_at = now
     return config

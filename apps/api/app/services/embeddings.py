@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import re
 from functools import lru_cache
 from typing import Sequence
 
@@ -16,6 +17,9 @@ from app.services.provider_health import (
 
 settings = get_settings()
 GEMINI_EMBEDDING_PROVIDER_NAME = "gemini-embeddings"
+
+# Heading patterns recognised by section-aware chunker.
+_HEADING_RE = re.compile(r"^#{1,6}\s+.+", re.MULTILINE)
 
 
 @lru_cache
@@ -40,12 +44,20 @@ def generate_embedding(
     *,
     task_type: str = "RETRIEVAL_QUERY",
     title: str | None = None,
+    ignore_provider_flag: bool = False,
 ) -> list[float] | None:
+    """Generate an embedding vector for *text*.
+
+    When ``ignore_provider_flag=True`` the ``phase3_use_remote_providers``
+    setting is bypassed, which allows semantic routing to function even when
+    the broader provider integrations are disabled.  The API key and circuit
+    breaker are still respected.
+    """
     normalized = text.strip()
     if not normalized:
         return None
 
-    if not settings.phase3_use_remote_providers:
+    if not ignore_provider_flag and not settings.phase3_use_remote_providers:
         return None
     if not settings.gemini_api_key:
         return None
@@ -54,18 +66,16 @@ def generate_embedding(
     if circuit_reason:
         return None
 
-    config_kwargs: dict[str, object] = {
-        "task_type": task_type,
-        "output_dimensionality": settings.gemini_embedding_output_dimensionality,
-    }
-    if title:
-        config_kwargs["title"] = title
-
     try:
+        embed_config = types.EmbedContentConfig(
+            task_type=task_type,
+            title=title,
+            output_dimensionality=settings.gemini_embedding_output_dimensionality,
+        )
         response = _get_embedding_client().models.embed_content(
             model=settings.gemini_embedding_model,
             contents=normalized,
-            config=types.EmbedContentConfig(**config_kwargs),
+            config=embed_config,
         )
         vector = _extract_embedding_values(response)
     except Exception as exc:
@@ -90,28 +100,65 @@ def to_pgvector_literal(values: Sequence[float]) -> str:
     return "[" + ",".join(f"{value:.8f}" for value in values) + "]"
 
 
+def _split_into_sections(text: str) -> list[str]:
+    """Split *text* on Markdown headings and blank-line boundaries.
+
+    This produces coarser, semantically meaningful sections before the
+    character-limit slicer is applied, so each chunk stays inside one
+    coherent topic rather than being cut arbitrarily mid-sentence.
+    """
+    # Normalise line endings first.
+    normalised = text.replace("\r\n", "\n").replace("\r", "\n")
+
+    # Insert a sentinel before every heading so we can split on it.
+    with_sentinels = _HEADING_RE.sub(lambda m: f"\x00{m.group(0)}", normalised)
+    raw_sections = with_sentinels.split("\x00")
+
+    sections: list[str] = []
+    for raw in raw_sections:
+        # Further split on blank lines (paragraph boundaries).
+        for paragraph in re.split(r"\n{2,}", raw):
+            cleaned = " ".join(paragraph.split())
+            if cleaned:
+                sections.append(cleaned)
+
+    return sections
+
+
 def chunk_text(
     text: str,
     *,
     max_chars: int = 500,
     overlap: int = 80,
 ) -> list[str]:
-    normalized = " ".join(text.split())
-    if not normalized:
+    """Chunk *text* into segments suitable for embedding.
+
+    The algorithm first splits the text on Markdown headings and paragraph
+    boundaries so each chunk stays within a coherent section.  Only when a
+    section is longer than *max_chars* is it sliced further, with an
+    *overlap* character window to preserve cross-boundary context.
+    """
+    sections = _split_into_sections(text)
+    if not sections:
         return []
 
     chunks: list[str] = []
-    start = 0
-    length = len(normalized)
+    for section in sections:
+        if len(section) <= max_chars:
+            chunks.append(section)
+            continue
 
-    while start < length:
-        end = min(start + max_chars, length)
-        chunk = normalized[start:end].strip()
-        if chunk:
-            chunks.append(chunk)
-        if end >= length:
-            break
-        start = max(end - overlap, start + 1)
+        # Slice long sections with overlap.
+        start = 0
+        length = len(section)
+        while start < length:
+            end = min(start + max_chars, length)
+            chunk = section[start:end].strip()
+            if chunk:
+                chunks.append(chunk)
+            if end >= length:
+                break
+            start = max(end - overlap, start + 1)
 
     return chunks
 

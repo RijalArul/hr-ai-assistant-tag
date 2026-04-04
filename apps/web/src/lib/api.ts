@@ -77,11 +77,19 @@ export interface Action {
   id: string;
   type: string;
   title: string;
-  summary: string;
+  summary: string | null;
   status: string;
   priority: string;
   sensitivity: string;
   delivery_channels: string[];
+  suggested_pic?: string | null;
+  suggested_next_action?: string | null;
+  sla_hours?: number | null;
+  escalation_rule?: string | null;
+  payload?: Record<string, unknown>;
+  execution_result?: Record<string, unknown> | null;
+  metadata?: Record<string, unknown>;
+  last_executed_at?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -89,6 +97,30 @@ export interface Action {
 export interface ActionListResponse {
   items: Action[];
   total: number;
+}
+
+export interface ActionExecutionResponse {
+  action: Action;
+  delivery_channels: string[];
+  delivery_requested: boolean;
+  execution_log?: {
+    id: string;
+    event_name: string;
+    status: string;
+    message?: string | null;
+    metadata?: Record<string, unknown>;
+    created_at: string;
+  } | null;
+  delivery_requests: Array<{
+    id: string;
+    action_id: string;
+    channel: string;
+    delivery_status: string;
+    target_reference?: string | null;
+    payload: Record<string, unknown>;
+    created_at: string;
+  }>;
+  webhook_deliveries_queued: number;
 }
 
 export interface Rule {

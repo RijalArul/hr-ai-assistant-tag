@@ -25,6 +25,12 @@ Supaya tidak rancu, status repo saat ini dibagi menjadi dua tahap:
 
 Dengan kata lain, Stage 1 sekarang membuat sistem lebih baik memahami maksud user, sedangkan Stage 2 nanti membuat sistem lebih baik memilih agent yang harus dijalankan.
 
+Hubungan dengan blueprint produk:
+- semantic routing terutama menghidupi **Reasoning Layer**
+- hasilnya dipakai downstream oleh **Employee Support Layer** untuk memilih bentuk jawaban seperti `informational`, `guidance`, `policy_reasoning`, atau `sensitive_guarded`
+- hasilnya juga menjadi sinyal untuk **HR Operations Layer** saat percakapan perlu masuk ke `workflow_intake` atau future `hr_ops_summary`
+- referensi ringkasnya ada di `docs/architecture/phase-7-product-capability-blueprint-id.md`
+
 ## Kenapa Desain Ini Diperlukan
 
 Classifier hardcoded punya beberapa kelemahan:
@@ -130,6 +136,7 @@ message user
        - route
        - confidence
        - sensitivity
+       - signals untuk downstream `request_category` / `response_mode`
   -> jalankan hr-data-agent / company-agent / file-agent / custom agents
   -> gabungkan hasil akhir
 ```
@@ -224,6 +231,7 @@ Output yang diharapkan dari LLM:
 - `confidence`
 - `sensitivity`
 - `chosen_agents`
+- signal yang cukup untuk downstream orchestrator menentukan `request_category` dan `response_mode`
 - `reasoning_summary`
 
 Dengan desain ini, LLM lebih mirip `decision judge` daripada `first-pass classifier`.
@@ -398,6 +406,7 @@ Output judge yang diharapkan pada Stage 2:
 - `sensitivity`
 - `chosen_agents`
 - `execution_mode`
+- downstream-friendly signals untuk `request_category` / `response_mode`
 - `reasoning_summary`
 
 ## Scope MVP Stage 2

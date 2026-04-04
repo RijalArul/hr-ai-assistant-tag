@@ -61,7 +61,7 @@ async def chat_completions(
     db: AsyncSession = Depends(get_db),
     session: SessionContext = Depends(get_current_session),
     x_hr_conversation_id: str | None = Header(default=None),
-) -> Response:
+) -> ChatCompletionResponse | StreamingResponse:
     if request_body.stream:
         # Streaming — returns SSE
         async def event_stream():

@@ -28,17 +28,73 @@ function formatTime(dateStr: string) {
   });
 }
 
-function categoryLabel(type: string) {
+function formatDateTime(dateStr: string) {
+  return new Date(dateStr).toLocaleString("en-US", {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function actionCategoryKey(action: Action) {
+  switch (action.type?.toLowerCase()) {
+    case "document_generation":
+      return "documents";
+    case "leave_request":
+      return "leave";
+    case "reimbursement_request":
+      return "reimbursement";
+    case "profile_update_request":
+      return "profile";
+    case "counseling_task":
+    case "escalation":
+      return "sensitive";
+    case "followup_chat":
+      return "followup";
+    default:
+      return "other";
+  }
+}
+
+function categoryLabel(action: Action) {
   const map: Record<string, string> = {
-    complaint: "Complaints",
-    payroll: "Payroll",
+    documents: "Documents",
     leave: "Leave",
     reimbursement: "Reimbursement",
+    profile: "Profile Update",
+    sensitive: "Sensitive",
+    followup: "Follow-up",
+    other: "Other",
   };
-  return map[type?.toLowerCase()] ?? type ?? "General";
+  return map[actionCategoryKey(action)] ?? "Other";
+}
+
+function buildDueLabel(action: Action) {
+  if (typeof action.sla_hours === "number" && action.sla_hours > 0) {
+    const dueAt = new Date(new Date(action.created_at).getTime() + action.sla_hours * 60 * 60 * 1000);
+    return `Due ${formatDateTime(dueAt.toISOString())}`;
+  }
+  return `Created ${formatTime(action.created_at)}`;
+}
+
+function priorityRank(priority: string | undefined) {
+  switch ((priority ?? "").toLowerCase()) {
+    case "urgent":
+      return 4;
+    case "high":
+      return 3;
+    case "medium":
+      return 2;
+    case "low":
+      return 1;
+    default:
+      return 0;
+  }
 }
 
 const PRIORITY_BADGE: Record<string, { bg: string; text: string; label: string }> = {
+  urgent: { bg: "#fecaca", text: "#991b1b", label: "Urgent" },
   high: { bg: "#fee2e2", text: "#b91c1c", label: "High" },
   medium: { bg: "#fef3c7", text: "#92400e", label: "Medium" },
   low: { bg: "#dcfce7", text: "#166534", label: "Low" },
@@ -54,10 +110,13 @@ const STATUS_BADGE: Record<string, { bg: string; text: string }> = {
 };
 
 const CATEGORY_BADGE: Record<string, { bg: string; text: string }> = {
-  complaint: { bg: "#fce7f3", text: "#9d174d" },
-  payroll: { bg: "#ede9fe", text: "#5b21b6" },
+  documents: { bg: "#ede9fe", text: "#5b21b6" },
   leave: { bg: "#e0f2fe", text: "#0369a1" },
   reimbursement: { bg: "#fef3c7", text: "#92400e" },
+  profile: { bg: "#dcfce7", text: "#166534" },
+  sensitive: { bg: "#fce7f3", text: "#9d174d" },
+  followup: { bg: "#ecfccb", text: "#3f6212" },
+  other: { bg: "#f1f5f9", text: "#475569" },
 };
 
 // ── Sub-components ────────────────────────────────────────────────────────────
@@ -151,12 +210,13 @@ function FilterTab({
 }
 
 function ActionCard({ action, onClick }: { action: Action; onClick: () => void }) {
-  const priority = PRIORITY_BADGE[action.sensitivity?.toLowerCase()] ?? {
+  const priority = PRIORITY_BADGE[action.priority?.toLowerCase()] ?? {
     bg: "#f3f4f6",
     text: "#374151",
-    label: action.sensitivity ?? "—",
+    label: action.priority ?? "—",
   };
-  const cat = CATEGORY_BADGE[action.type?.toLowerCase()] ?? { bg: "#f1f5f9", text: "#475569" };
+  const categoryKey = actionCategoryKey(action);
+  const cat = CATEGORY_BADGE[categoryKey] ?? CATEGORY_BADGE.other;
   const status = STATUS_BADGE[action.status] ?? { bg: "#f3f4f6", text: "#374151" };
 
   return (
@@ -208,9 +268,9 @@ function ActionCard({ action, onClick }: { action: Action; onClick: () => void }
             color: cat.text,
             fontWeight: 500,
           }}
-        >
-          {categoryLabel(action.type)}
-        </span>
+          >
+            {categoryLabel(action)}
+          </span>
         <div style={{ flex: 1 }} />
         <span
           style={{
@@ -241,7 +301,7 @@ function ActionCard({ action, onClick }: { action: Action; onClick: () => void }
       {/* Footer row */}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 2 }}>
         <span style={{ fontSize: 11, color: "#94a3b8" }}>
-          Due {formatTime(action.created_at)}
+          {buildDueLabel(action)}
         </span>
         <button
           onClick={(e) => {
@@ -270,10 +330,11 @@ function ActionCard({ action, onClick }: { action: Action; onClick: () => void }
 
 const FILTER_TABS = [
   { key: "all", label: "All" },
-  { key: "complaint", label: "Complaints" },
-  { key: "payroll", label: "Payroll" },
+  { key: "documents", label: "Documents" },
   { key: "leave", label: "Leave" },
   { key: "reimbursement", label: "Reimbursement" },
+  { key: "sensitive", label: "Sensitive" },
+  { key: "profile", label: "Profile" },
 ];
 
 export default function HRDashboard() {
@@ -296,23 +357,29 @@ export default function HRDashboard() {
   // Stats
   const newToday = items.filter((a) => isToday(a.created_at)).length;
   const pending = items.filter((a) => a.status === "pending" || a.status === "ready").length;
-  const highPriority = items.filter((a) => a.sensitivity === "high").length;
+  const highPriority = items.filter((a) => priorityRank(a.priority) >= 3).length;
   const resolved = items.filter((a) => a.status === "completed").length;
 
   // AI Insights
   const criticalPending = items.filter(
-    (a) => a.sensitivity === "high" && (a.status === "pending" || a.status === "ready")
+    (a) => priorityRank(a.priority) >= 4 && (a.status === "pending" || a.status === "ready")
   ).length;
   const inProgress = items.filter((a) => a.status === "in_progress").length;
   const topAction = items
-    .filter((a) => a.sensitivity === "high" && a.status === "pending")
-    .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())[0];
+    .filter((a) => a.status === "pending" || a.status === "ready")
+    .sort((a, b) => {
+      const rankDiff = priorityRank(b.priority) - priorityRank(a.priority);
+      if (rankDiff !== 0) {
+        return rankDiff;
+      }
+      return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
+    })[0];
 
   // Filter
   const filtered =
     activeFilter === "all"
       ? items.slice(0, 10)
-      : items.filter((a) => a.type?.toLowerCase() === activeFilter).slice(0, 10);
+      : items.filter((a) => actionCategoryKey(a) === activeFilter).slice(0, 10);
 
   return (
     <div style={{ padding: "28px 32px", minHeight: "100%" }}>

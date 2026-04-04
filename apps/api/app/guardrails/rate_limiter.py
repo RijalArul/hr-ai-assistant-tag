@@ -38,7 +38,10 @@ async def check_rate_limit(
     """
     limit = _get_limit(action_type, config)
     window_seconds = _WINDOWS.get(action_type, 3600)
-    redis = get_redis()
+    try:
+        redis = get_redis()
+    except RuntimeError:
+        return True, 0, limit
     key = _key(company_id, employee_id, action_type)
     now = time.time()
     window_start = now - window_seconds
@@ -65,7 +68,30 @@ async def get_rate_status(
     config: RateLimitConfig,
 ) -> dict[str, RateLimitEntry]:
     """Return current rate status for all action types for one employee."""
-    redis = get_redis()
+    try:
+        redis = get_redis()
+    except RuntimeError:
+        now = datetime.now(UTC)
+        return {
+            "messages_per_hour": RateLimitEntry(
+                limit=config.messages_per_hour,
+                current=0,
+                remaining=config.messages_per_hour,
+                resets_at=now + timedelta(seconds=3600),
+            ),
+            "conversations_per_day": RateLimitEntry(
+                limit=config.conversations_per_day,
+                current=0,
+                remaining=config.conversations_per_day,
+                resets_at=now + timedelta(seconds=86400),
+            ),
+            "file_uploads_per_hour": RateLimitEntry(
+                limit=config.file_uploads_per_hour,
+                current=0,
+                remaining=config.file_uploads_per_hour,
+                resets_at=now + timedelta(seconds=3600),
+            ),
+        }
     now = time.time()
     result: dict[str, RateLimitEntry] = {}
 

@@ -1,4 +1,5 @@
 from typing import Literal
+from inspect import isawaitable
 
 from fastapi import APIRouter, status
 from pydantic import BaseModel, ConfigDict
@@ -41,35 +42,43 @@ class HealthResponse(BaseModel):
     ),
 )
 async def health() -> HealthResponse:
-    result = {
-        "status": "ok",
-        "database": "ok",
-        "redis": "ok",
-        "lru_cache": "ok",
-    }
+    overall_status: Literal["ok", "degraded"] = "ok"
+    database_status = "ok"
+    redis_status = "ok"
+    lru_cache_status = "ok"
 
     # Check database
     try:
         async with AsyncSessionLocal() as session:
             await session.execute(text("SELECT 1"))
     except Exception as e:
-        result["database"] = f"error: {e}"
-        result["status"] = "degraded"
+        database_status = f"error: {e}"
+        overall_status = "degraded"
 
     # Check Redis
     try:
         redis = get_redis()
-        await redis.ping()
+        ping_result = redis.ping()
+        if isawaitable(ping_result):
+            await ping_result
     except Exception as e:
-        result["redis"] = f"error: {e}"
-        result["status"] = "degraded"
+        redis_status = f"error: {e}"
+        overall_status = "degraded"
 
     # Check LRU cache registry
     try:
         cache_health = get_cache_health()
-        result["lru_cache"] = cache_health["status"]
+        cache_status = cache_health.get("status")
+        if not isinstance(cache_status, str):
+            raise RuntimeError("Cache health status is unavailable.")
+        lru_cache_status = cache_status
     except Exception as e:
-        result["lru_cache"] = f"error: {e}"
-        result["status"] = "degraded"
+        lru_cache_status = f"error: {e}"
+        overall_status = "degraded"
 
-    return HealthResponse(**result)
+    return HealthResponse(
+        status=overall_status,
+        database=database_status,
+        redis=redis_status,
+        lru_cache=lru_cache_status,
+    )

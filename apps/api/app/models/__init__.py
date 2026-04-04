@@ -31,6 +31,7 @@ from app.models.agent_architecture import (
     AgentTraceStep,
     AttachmentInput,
     CompanyAgentResult,
+    ConversationRequestCategory,
     ConversationIntent,
     EvidenceItem,
     FileAgentResult,
@@ -38,6 +39,7 @@ from app.models.agent_architecture import (
     IntentAssessment,
     OrchestratorRequest,
     OrchestratorResponse,
+    ResponseMode,
     SensitivityAssessment,
 )
 from app.models.conversation_api import (
@@ -79,6 +81,7 @@ __all__ = [
     "AgentTraceStep",
     "AttachmentInput",
     "CompanyAgentResult",
+    "ConversationRequestCategory",
     "ConversationIntent",
     "EvidenceItem",
     "FileAgentResult",
@@ -86,6 +89,7 @@ __all__ = [
     "IntentAssessment",
     "OrchestratorRequest",
     "OrchestratorResponse",
+    "ResponseMode",
     "SensitivityAssessment",
     "ConversationCreateRequest",
     "ConversationMessageCreateRequest",

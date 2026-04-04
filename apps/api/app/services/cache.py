@@ -98,6 +98,10 @@ def init_cache_registry() -> dict[str, LRUCache[object]]:
                 max_entries=settings.lru_cache_max_entries,
                 ttl_seconds=settings.lru_cache_ttl_seconds,
             ),
+            "responsibility_routes": LRUCache(
+                max_entries=settings.lru_cache_max_entries,
+                ttl_seconds=settings.lru_cache_ttl_seconds,
+            ),
             "intent_examples": LRUCache(
                 max_entries=settings.lru_cache_max_entries,
                 ttl_seconds=settings.lru_cache_ttl_seconds,
@@ -105,6 +109,19 @@ def init_cache_registry() -> dict[str, LRUCache[object]]:
             "agent_capabilities": LRUCache(
                 max_entries=settings.lru_cache_max_entries,
                 ttl_seconds=settings.lru_cache_ttl_seconds,
+            ),
+            # I.5: per-request caches for query embedding vectors and retrieval results.
+            "query_embeddings": LRUCache(
+                max_entries=512,
+                ttl_seconds=600,
+            ),
+            "retrieval_results_intent": LRUCache(
+                max_entries=256,
+                ttl_seconds=120,
+            ),
+            "retrieval_results_capability": LRUCache(
+                max_entries=256,
+                ttl_seconds=120,
             ),
             "classifier_config": LRUCache(
                 max_entries=settings.lru_cache_max_entries,

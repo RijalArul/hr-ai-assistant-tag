@@ -51,6 +51,15 @@ def create_access_token(session: SessionContext) -> str:
     return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
 
 
+def _get_string_claim(payload: object, key: str) -> str | None:
+    if not isinstance(payload, dict):
+        return None
+    value = payload.get(key)
+    if isinstance(value, str) and value.strip():
+        return value
+    return None
+
+
 def decode_access_token(token: str) -> SessionContext:
     settings = get_settings()
     try:
@@ -62,12 +71,17 @@ def decode_access_token(token: str) -> SessionContext:
     except JWTError as exc:
         raise _credentials_exception() from exc
 
-    employee_id = payload.get("sub")
-    company_id = payload.get("company_id")
-    email = payload.get("email")
-    role = payload.get("role")
+    employee_id = _get_string_claim(payload, "sub")
+    company_id = _get_string_claim(payload, "company_id")
+    email = _get_string_claim(payload, "email")
+    role = _get_string_claim(payload, "role")
 
-    if not all([employee_id, company_id, email, role]):
+    if (
+        employee_id is None
+        or company_id is None
+        or email is None
+        or role is None
+    ):
         raise _credentials_exception()
 
     return SessionContext(

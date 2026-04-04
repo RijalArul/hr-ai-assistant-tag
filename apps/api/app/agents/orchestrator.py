@@ -13,17 +13,24 @@ from app.agents.company_agent import run_company_agent
 from app.agents.file_agent import run_file_agent
 from app.agents.hr_data_agent import run_hr_data_agent
 from app.core.security import SessionContext
+from app.guardrails.sensitive_cases import (
+    SensitiveCaseAssessment,
+    assess_sensitive_case,
+)
 from app.models import (
     AgentRoute,
     AgentTraceStep,
     ConversationIntent,
+    ConversationRequestCategory,
     IntentAssessment,
     OrchestratorRequest,
     OrchestratorResponse,
+    ResponseMode,
     SensitivityAssessment,
 )
 from app.services.cache import get_cache
 from app.services.db import AsyncSessionLocal
+from app.services.execution_intent import assess_action_execution_intent
 from app.services.minimax import ProviderClassificationResult, classify_with_minimax
 from app.services.semantic_router import (
     AgentCapabilityResult,
@@ -84,11 +91,56 @@ INTENT_KEYWORDS: OrderedDict[ConversationIntent, list[str]] = OrderedDict(
         ),
         (
             ConversationIntent.COMPANY_POLICY,
-            ["kebijakan", "aturan", "policy", "peraturan", "kode etik", "jam kerja", "carry over"],
+            [
+                "kebijakan",
+                "aturan",
+                "policy",
+                "peraturan",
+                "kode etik",
+                "jam kerja",
+                "carry over",
+                "reimburse",
+                "reimbursement",
+                "klaim",
+                "claim",
+                "benefit",
+                "benefits",
+                "ditanggung",
+                "eligible",
+                "berhak",
+                "syarat",
+                "tunjangan",
+                "allowance",
+                "probation",
+                "sesuai policy",
+            ],
         ),
         (
             ConversationIntent.COMPANY_STRUCTURE,
-            ["struktur", "departemen", "department", "tim hr", "kepala departemen", "head of"],
+            [
+                "struktur",
+                "organisasi",
+                "departemen",
+                "department",
+                "tim hr",
+                "kepala departemen",
+                "head of",
+                "human resources",
+                "personalia",
+                "kontak hr",
+                "pic hr",
+                "onboarding",
+                "karyawan baru",
+                "pegawai baru",
+                "siapa pic",
+                "recruiter",
+                "rekrutmen",
+                "referral",
+                "hiring",
+                "talent acquisition",
+                "hrbp",
+                "it support",
+            ],
         ),
         (
             ConversationIntent.EMPLOYEE_WELLBEING_CONCERN,
@@ -116,6 +168,11 @@ DEFAULT_SENSITIVITY_KEYWORDS = {
         "toxic",
         "intimidasi",
     ],
+}
+SENSITIVITY_RANK = {
+    SensitivityLevel.LOW: 0,
+    SensitivityLevel.MEDIUM: 1,
+    SensitivityLevel.HIGH: 2,
 }
 
 HR_DATA_INTENTS = {
@@ -145,10 +202,197 @@ AGENT_CAPABILITY_ROUTE_THRESHOLD = {
     "lexical": 0.42,
 }
 KNOWN_AGENT_KEYS = {"hr-data-agent", "company-agent", "file-agent"}
+GUIDANCE_REQUEST_MARKERS = [
+    "tanya siapa",
+    "hubungi siapa",
+    "kontak siapa",
+    "ke siapa",
+    "harus ke siapa",
+    "harus tanya ke siapa",
+    "siapa yang bisa bantu",
+    "siapa yang harus saya hubungi",
+    "siapa pic",
+    "pic siapa",
+    "siapa recruiter",
+    "siapa hrbp",
+    "ke tim mana",
+    "jalur mana",
+    "minta arahan",
+    "next step",
+    "langkah berikutnya",
+]
+POLICY_REASONING_MARKERS = [
+    "bisa reimburse",
+    "eligible",
+    "reimburse",
+    "klaim",
+    "claim",
+    "limit",
+    "maksimal",
+    "max",
+    "syarat",
+    "dokumen",
+    "apakah bisa",
+    "bisa ambil",
+    "boleh nggak",
+    "boleh gak",
+    "berhak",
+    "jatah",
+    "apakah dapat",
+    "sesuai policy",
+    "masih sesuai",
+]
+DECISION_SUPPORT_MARKERS = [
+    "resign",
+    "mengundurkan diri",
+    "pengunduran diri",
+    "burnout",
+    "capek",
+    "bingung",
+    "konflik",
+    "atasan saya",
+    "manager saya",
+    "internal move",
+    "mutasi",
+]
+SENSITIVE_REPORT_MARKERS = [
+    "lapor",
+    "melaporkan",
+    "report",
+    "pelecehan",
+    "diskriminasi",
+    "unsafe",
+    "kekerasan",
+    "dibully",
+]
+COMPANY_GUIDANCE_SCOPE_MARKERS = [
+    "departemen",
+    "department",
+    "tim hr",
+    "human resources",
+    "personalia",
+    "administrasi",
+    "onboarding",
+    "karyawan baru",
+    "pegawai baru",
+    "kontak hr",
+    "pic hr",
+    "payroll",
+    "gaji",
+    "benefit",
+    "benefits",
+    "reimbursement",
+    "reimburse",
+    "klaim",
+    "claim",
+    "referral",
+    "refer",
+    "recruiter",
+    "recruitment",
+    "rekrutmen",
+    "hiring",
+    "talent acquisition",
+    "ta",
+    "hrbp",
+    "people partner",
+    "people ops",
+    "career",
+    "karier",
+    "internal move",
+    "mutasi",
+    "it support",
+    "issue teknis",
+    "teknis internal",
+    "akses sistem",
+    "akun kerja",
+    "password",
+    "device",
+    "laptop",
+]
 
 
 def _normalize_message(message: str) -> str:
     return " ".join(message.lower().strip().split())
+
+
+def _contains_any_phrase(message: str, phrases: list[str]) -> bool:
+    return any(phrase in message for phrase in phrases)
+
+
+def _looks_like_guidance_request(message: str) -> bool:
+    return _contains_any_phrase(message, GUIDANCE_REQUEST_MARKERS)
+
+
+def _looks_like_policy_reasoning_request(message: str) -> bool:
+    if _contains_any_phrase(message, POLICY_REASONING_MARKERS):
+        return True
+    return bool(re.search(r"\b\d{2,}\s?(k|rb|ribu|jt|juta|m|million)\b", message))
+
+
+def _looks_like_workflow_request(
+    message: str,
+    intent: ConversationIntent,
+) -> bool:
+    gate = assess_action_execution_intent(
+        message,
+        intent_key=intent.value,
+    )
+    return bool(gate.get("should_trigger"))
+
+
+def _looks_like_decision_support(message: str) -> bool:
+    return _contains_any_phrase(message, DECISION_SUPPORT_MARKERS)
+
+
+def _looks_like_sensitive_report(message: str) -> bool:
+    return _contains_any_phrase(message, SENSITIVE_REPORT_MARKERS)
+
+
+def _pack_agent_message(
+    base_message: str,
+    *,
+    attachment_text: str | None = None,
+    conversation_history: list[dict[str, str]] | None = None,
+    max_history_items: int = 4,
+    max_attachment_chars: int = 1200,
+) -> str:
+    """Build a structured, labelled context block for downstream agents (I.7).
+
+    Rather than concatenating attachment text and history as raw strings,
+    this helper wraps each piece in a clearly labelled section so agents
+    can parse context boundaries reliably without grepping for sentinel text.
+
+    Layout produced:
+        [USER REQUEST]
+        <base_message>
+
+        [CONVERSATION HISTORY]
+        user: ...
+        assistant: ...
+
+        [ATTACHMENT CONTENT]
+        <extracted text>
+    """
+    parts: list[str] = [f"[USER REQUEST]\n{base_message.strip()}"]
+
+    if conversation_history:
+        history_items = conversation_history[-max_history_items:]
+        history_lines: list[str] = []
+        for item in history_items:
+            role = str(item.get("role", "unknown")).strip().lower()
+            content = str(item.get("content", "")).strip()
+            if content:
+                history_lines.append(f"{role}: {content[:400]}")
+        if history_lines:
+            parts.append("[CONVERSATION HISTORY]\n" + "\n".join(history_lines))
+
+    if attachment_text:
+        truncated = attachment_text[:max_attachment_chars]
+        if len(attachment_text) > max_attachment_chars:
+            truncated += " [truncated]"
+        parts.append(f"[ATTACHMENT CONTENT]\n{truncated}")
+
+    return "\n\n".join(parts)
 
 
 def _build_classification_message(
@@ -329,6 +573,49 @@ def _apply_local_intent_bonus(
         if any(token in lowered_message for token in ["aturan", "kebijakan", "policy"]):
             bonus_score += 2
             bonus_matches.append("company_policy_signal")
+        if _looks_like_policy_reasoning_request(lowered_message):
+            bonus_score += 3
+            bonus_matches.append("company_policy_reasoning_signal")
+
+    if intent == ConversationIntent.COMPANY_STRUCTURE:
+        mentions_contact_route = any(
+            token in lowered_message
+            for token in [
+                "tanya siapa",
+                "hubungi siapa",
+                "kontak siapa",
+                "ke siapa",
+                "harus ke siapa",
+                "siapa yang bisa bantu",
+                "siapa pic",
+                "pic siapa",
+                "siapa recruiter",
+                "siapa hrbp",
+                "ke tim mana",
+                "jalur mana",
+            ]
+        )
+        mentions_structure_scope = any(
+            token in lowered_message for token in COMPANY_GUIDANCE_SCOPE_MARKERS
+        ) or bool(re.search(r"\bhr\b", lowered_message))
+        if mentions_contact_route and mentions_structure_scope:
+            bonus_score += 4
+            bonus_matches.append("company_structure_contact_signal")
+
+        if any(
+            token in lowered_message
+            for token in [
+                "struktur",
+                "organisasi",
+                "departemen",
+                "department",
+                "tim hr",
+                "kepala departemen",
+                "head of",
+            ]
+        ):
+            bonus_score += 2
+            bonus_matches.append("company_structure_signal")
 
     return bonus_score, bonus_matches
 
@@ -519,6 +806,43 @@ def assess_sensitivity(
     )
 
 
+def _merge_sensitive_case_sensitivity(
+    sensitivity: SensitivityAssessment,
+    sensitive_case: SensitiveCaseAssessment | None,
+) -> SensitivityAssessment:
+    if sensitive_case is None:
+        return sensitivity
+
+    matched_keywords = sorted(
+        set(sensitivity.matched_keywords + list(sensitive_case.matched_markers))
+    )
+    if sensitive_case.case_key not in matched_keywords:
+        matched_keywords.append(sensitive_case.case_key)
+
+    if (
+        SENSITIVITY_RANK[sensitive_case.minimum_sensitivity]
+        <= SENSITIVITY_RANK[sensitivity.level]
+    ):
+        return sensitivity.model_copy(
+            update={
+                "matched_keywords": matched_keywords,
+                "rationale": (
+                    f"{sensitivity.rationale} Kategori {sensitive_case.case_key} "
+                    "tetap diperlakukan hati-hati."
+                ),
+            }
+        )
+
+    return SensitivityAssessment(
+        level=sensitive_case.minimum_sensitivity,
+        matched_keywords=matched_keywords,
+        rationale=(
+            f"Pesan cocok dengan kategori sensitif {sensitive_case.case_key} "
+            "yang perlu diarahkan ke penanganan manusia."
+        ),
+    )
+
+
 def _resolve_route(intent: IntentAssessment) -> AgentRoute:
     intents = {intent.primary_intent, *intent.secondary_intents}
     needs_hr_data = any(item in HR_DATA_INTENTS for item in intents)
@@ -651,12 +975,201 @@ def _build_query_policy_trace_detail(query_policy: dict[str, Any]) -> str:
     )
 
 
-def _build_sensitive_response(sensitivity: SensitivityAssessment) -> str:
-    matched = ", ".join(sensitivity.matched_keywords) if sensitivity.matched_keywords else "topik sensitif"
+def _derive_request_category(
+    *,
+    message: str,
+    intent: IntentAssessment,
+    sensitivity: SensitivityAssessment,
+    route: AgentRoute,
+    company_records: dict[str, Any] | None = None,
+) -> ConversationRequestCategory:
+    lowered = _normalize_message(message)
+    company_records = company_records or {}
+
+    if sensitivity.level != SensitivityLevel.LOW:
+        if _looks_like_decision_support(lowered):
+            return ConversationRequestCategory.DECISION_SUPPORT
+        if _looks_like_sensitive_report(lowered):
+            return ConversationRequestCategory.SENSITIVE_REPORT
+        return ConversationRequestCategory.SENSITIVE_REPORT
+
+    if _looks_like_workflow_request(lowered, intent.primary_intent):
+        return ConversationRequestCategory.WORKFLOW_REQUEST
+
+    if (
+        company_records.get("contact_guidance_requested")
+        or (
+            route in {AgentRoute.COMPANY, AgentRoute.MIXED}
+            and _looks_like_guidance_request(lowered)
+        )
+    ):
+        return ConversationRequestCategory.GUIDANCE_REQUEST
+
+    if (
+        intent.primary_intent == ConversationIntent.COMPANY_POLICY
+        and _looks_like_policy_reasoning_request(lowered)
+    ):
+        return ConversationRequestCategory.POLICY_REASONING_REQUEST
+
+    return ConversationRequestCategory.INFORMATIONAL_QUESTION
+
+
+def _resolve_response_mode(
+    request_category: ConversationRequestCategory,
+    *,
+    sensitivity: SensitivityAssessment,
+) -> ResponseMode:
+    if sensitivity.level != SensitivityLevel.LOW:
+        return ResponseMode.SENSITIVE_GUARDED
+    if request_category == ConversationRequestCategory.GUIDANCE_REQUEST:
+        return ResponseMode.GUIDANCE
+    if request_category == ConversationRequestCategory.POLICY_REASONING_REQUEST:
+        return ResponseMode.POLICY_REASONING
+    if request_category == ConversationRequestCategory.WORKFLOW_REQUEST:
+        return ResponseMode.WORKFLOW_INTAKE
+    return ResponseMode.INFORMATIONAL
+
+
+def _build_recommended_next_steps(
+    *,
+    intent: IntentAssessment,
+    route: AgentRoute,
+    request_category: ConversationRequestCategory,
+    response_mode: ResponseMode,
+    company_records: dict[str, Any] | None = None,
+    sensitive_case: SensitiveCaseAssessment | None = None,
+) -> list[str]:
+    company_records = company_records or {}
+    steps: list[str] = []
+
+    if response_mode == ResponseMode.GUIDANCE:
+        recommended_channel = str(company_records.get("recommended_channel") or "").strip()
+        if recommended_channel:
+            steps.append(f"Mulai lewat channel yang disarankan: {recommended_channel}.")
+
+        preparation_checklist = company_records.get("preparation_checklist")
+        if isinstance(preparation_checklist, list):
+            for item in preparation_checklist[:2]:
+                item_text = str(item).strip()
+                if item_text:
+                    steps.append(item_text)
+
+        if not steps:
+            steps.extend(
+                [
+                    "Hubungi PIC atau fungsi yang paling relevan untuk topik ini.",
+                    "Siapkan ringkasan masalah dan konteks singkat sebelum menghubungi mereka.",
+                ]
+            )
+    elif response_mode == ResponseMode.POLICY_REASONING:
+        policy_reasoning = (
+            company_records.get("policy_reasoning")
+            if isinstance(company_records, dict)
+            else None
+        )
+        if isinstance(policy_reasoning, dict):
+            eligibility = str(policy_reasoning.get("eligibility") or "").strip().lower()
+            if eligibility != "not_eligible":
+                required_documents = policy_reasoning.get("required_documents")
+                if isinstance(required_documents, list) and required_documents:
+                    steps.append(
+                        "Siapkan dokumen pendukung ini: "
+                        + ", ".join(str(item) for item in required_documents[:3])
+                        + "."
+                    )
+            next_action = str(policy_reasoning.get("next_action") or "").strip()
+            if next_action:
+                steps.append(next_action)
+            if not steps:
+                if eligibility == "not_eligible":
+                    steps.append(
+                        "Jangan ajukan klaim dulu sebelum ada konfirmasi manual kalau kasusmu memang berbeda dari pengecualian policy."
+                    )
+                else:
+                    steps.extend(
+                        [
+                            "Siapkan nominal, tanggal, dan dokumen pendukung bila ingin verifikasi policy lebih presisi.",
+                            "Tambahkan detail benefit, level, atau kategori klaim jika kasusmu masih ambigu.",
+                        ]
+                    )
+        else:
+            steps.extend(
+                [
+                    "Siapkan nominal, tanggal, dan dokumen pendukung bila ingin verifikasi policy lebih presisi.",
+                    "Tambahkan detail benefit, level, atau kategori klaim jika kasusmu masih ambigu.",
+                ]
+            )
+    elif response_mode == ResponseMode.WORKFLOW_INTAKE:
+        steps.extend(
+            [
+                "Sebutkan periode atau detail dokumen secara eksplisit jika kamu ingin sistem membuat action formal.",
+                "Cek action percakapan ini setelah request dikonfirmasi untuk melihat follow-up yang dibuat.",
+            ]
+        )
+    elif response_mode == ResponseMode.SENSITIVE_GUARDED:
+        if sensitive_case is not None and sensitive_case.recommended_next_steps:
+            steps.extend(list(sensitive_case.recommended_next_steps))
+        elif request_category == ConversationRequestCategory.DECISION_SUPPORT:
+            steps.extend(
+                [
+                    "Pertimbangkan diskusi dulu dengan atasan atau HR yang relevan sebelum mengambil langkah formal.",
+                    "Kalau kamu nyaman, jelaskan konteks utamanya supaya arahan berikutnya bisa lebih tepat.",
+                ]
+            )
+        else:
+            steps.extend(
+                [
+                    "Gunakan jalur HR atau kanal pelaporan resmi agar kasus sensitif ini ditangani manusia yang berwenang.",
+                    "Jangan mengandalkan jalur otomatis saja untuk kasus dengan dampak tinggi seperti ini.",
+                ]
+            )
+    elif response_mode == ResponseMode.INFORMATIONAL:
+        if intent.primary_intent in HR_DATA_INTENTS | {ConversationIntent.PAYROLL_DOCUMENT_REQUEST}:
+            steps.append("Tambahkan periode spesifik bila kamu ingin jawaban yang lebih presisi.")
+        elif route in {AgentRoute.COMPANY, AgentRoute.MIXED}:
+            steps.append("Kalau kamu butuh arahan praktis, lanjutkan dengan topik spesifik atau tanya harus ke siapa.")
+
+    deduped_steps: list[str] = []
+    for step in steps:
+        if step not in deduped_steps:
+            deduped_steps.append(step)
+    return deduped_steps[:3]
+
+
+def _build_response_contract_trace_detail(
+    request_category: ConversationRequestCategory,
+    response_mode: ResponseMode,
+    recommended_next_steps: list[str],
+) -> str:
     return (
-        "Topik ini masuk jalur sensitif. Aku tidak akan menyimpulkan atau "
-        "mengotomasi penanganannya. Mohon teruskan ke HR/Admin yang berwenang "
-        f"untuk review manual. Indikator yang terdeteksi: {matched}."
+        f"request_category={request_category.value}, "
+        f"response_mode={response_mode.value}, "
+        f"recommended_next_steps={len(recommended_next_steps)}"
+    )
+
+
+def _build_sensitive_response(
+    sensitivity: SensitivityAssessment,
+    sensitive_case: SensitiveCaseAssessment | None = None,
+) -> str:
+    if sensitive_case is not None:
+        return sensitive_case.response_template
+
+    return (
+        "Terima kasih sudah menyampaikan hal yang sensitif ini. Aku tidak akan "
+        "menyimpulkan atau mengotomasi penanganannya. Jalur yang paling aman "
+        "adalah meminta bantuan HR atau pihak perusahaan yang berwenang untuk "
+        "menangani kasus ini secara manusiawi."
+    )
+
+
+def _build_sensitive_case_trace_detail(
+    sensitive_case: SensitiveCaseAssessment,
+) -> str:
+    return (
+        f"sensitive_case={sensitive_case.case_key}, "
+        f"action_policy={sensitive_case.action_policy}, "
+        f"review_policy={sensitive_case.review_policy}"
     )
 
 
@@ -1238,7 +1751,7 @@ def _build_fallback_ladder(
 
     ladder.append(
         {
-            "stage": "response_mode",
+            "stage": "answer_completeness",
             "status": "partial_answer" if partial_or_weak else "direct_answer",
             "detail": (
                 "One or more retrieval stages were partial/weak, so the answer discloses limits."
@@ -1315,7 +1828,12 @@ async def orchestrate_message(
         file_summary = file_result.summary
         extracted_attachment_text = file_result.extracted_text
         if extracted_attachment_text:
-            agent_message = f"{agent_message}\n\nAttachment context:\n{extracted_attachment_text}"
+            # I.7: structured context packing – label attachment content clearly
+            # so downstream agents can parse boundaries without heuristics.
+            agent_message = _pack_agent_message(
+                agent_message,
+                attachment_text=extracted_attachment_text,
+            )
             routing_message = agent_message
     else:
         trace.append(
@@ -1389,6 +1907,11 @@ async def orchestrate_message(
     )
     intent = classify_intent(classification_message, classifier_overrides)
     sensitivity = assess_sensitivity(classification_message, classifier_overrides)
+    sensitive_case = assess_sensitive_case(
+        classification_message,
+        sensitivity_level=sensitivity.level,
+    )
+    sensitivity = _merge_sensitive_case_sensitivity(sensitivity, sensitive_case)
     provider_input_message = classification_message
 
     if _should_refine_with_attachment_preview(intent, extracted_attachment_text):
@@ -1400,6 +1923,11 @@ async def orchestrate_message(
         )
         intent = classify_intent(provider_input_message, classifier_overrides)
         sensitivity = assess_sensitivity(provider_input_message, classifier_overrides)
+        sensitive_case = assess_sensitive_case(
+            provider_input_message,
+            sensitivity_level=sensitivity.level,
+        )
+        sensitivity = _merge_sensitive_case_sensitivity(sensitivity, sensitive_case)
         trace.append(
             AgentTraceStep(
                 agent="orchestrator",
@@ -1440,33 +1968,39 @@ async def orchestrate_message(
             isinstance(provider_assessment, ProviderClassificationResult)
             and provider_assessment.is_success
         ):
-            intent = provider_assessment.intent  # type: ignore[assignment]
-            sensitivity = provider_assessment.sensitivity  # type: ignore[assignment]
-            classifier_source = "minimax"
-            provider_status = "used"
-            provider_reason = "MiniMax classification replaced the local result."
-            provider_chosen_agents = _sanitize_agent_keys(
-                provider_assessment.chosen_agents,
-                has_attachments=bool(payload.attachments),
-            )
-            used_agents.append("minimax-classifier")
-            trace.append(
-                AgentTraceStep(
-                    agent="minimax-classifier",
-                    status="used",
-                    detail=(
-                        f"Provider intent={intent.primary_intent.value}, "
-                        f"sensitivity={sensitivity.level.value}, "
-                        f"confidence={intent.confidence:.2f}, "
-                        f"chosen_agents={provider_chosen_agents or ['none']}"
-                    ),
+            provider_intent = provider_assessment.intent
+            provider_sensitivity = provider_assessment.sensitivity
+            if provider_intent is not None and provider_sensitivity is not None:
+                intent = provider_intent
+                sensitivity = provider_sensitivity
+                classifier_source = "minimax"
+                provider_status = "used"
+                provider_reason = "MiniMax classification replaced the local result."
+                provider_chosen_agents = _sanitize_agent_keys(
+                    provider_assessment.chosen_agents,
+                    has_attachments=bool(payload.attachments),
                 )
-            )
+                used_agents.append("minimax-classifier")
+                trace.append(
+                    AgentTraceStep(
+                        agent="minimax-classifier",
+                        status="used",
+                        detail=(
+                            f"Provider intent={intent.primary_intent.value}, "
+                            f"sensitivity={sensitivity.level.value}, "
+                            f"confidence={intent.confidence:.2f}, "
+                            f"chosen_agents={provider_chosen_agents or ['none']}"
+                        ),
+                    )
+                )
         else:
             provider_status = "fallback"
             fallback_reason = (
                 provider_assessment.fallback_reason
-                if isinstance(provider_assessment, ProviderClassificationResult)
+                if (
+                    isinstance(provider_assessment, ProviderClassificationResult)
+                    and provider_assessment.fallback_reason
+                )
                 else "MiniMax provider returned no usable classification result."
             )
             provider_reason = fallback_reason
@@ -1507,8 +2041,8 @@ async def orchestrate_message(
                             f"was unavailable. intent={intent.primary_intent.value}, "
                             f"confidence={intent.confidence:.2f}"
                         ),
-                    )
                 )
+            )
     else:
         provider_reason = provider_decision_reason
         trace.append(
@@ -1516,6 +2050,21 @@ async def orchestrate_message(
                 agent="minimax-classifier",
                 status="skipped",
                 detail=provider_decision_reason,
+            )
+        )
+
+    sensitive_case = assess_sensitive_case(
+        provider_input_message,
+        sensitivity_level=sensitivity.level,
+    )
+    sensitivity = _merge_sensitive_case_sensitivity(sensitivity, sensitive_case)
+    if sensitive_case is not None:
+        context["sensitive_handling"] = sensitive_case.as_context()
+        trace.append(
+            AgentTraceStep(
+                agent="sensitive-policy",
+                status="used",
+                detail=_build_sensitive_case_trace_detail(sensitive_case),
             )
         )
 
@@ -1570,11 +2119,48 @@ async def orchestrate_message(
     )
 
     if sensitivity.level != SensitivityLevel.LOW:
+        request_category = _derive_request_category(
+            message=payload.message,
+            intent=intent,
+            sensitivity=sensitivity,
+            route=AgentRoute.SENSITIVE_REDIRECT,
+        )
+        response_mode = _resolve_response_mode(
+            request_category,
+            sensitivity=sensitivity,
+        )
+        recommended_next_steps = _build_recommended_next_steps(
+            intent=intent,
+            route=AgentRoute.SENSITIVE_REDIRECT,
+            request_category=request_category,
+            response_mode=response_mode,
+            company_records=None,
+            sensitive_case=sensitive_case,
+        )
+        context["response_contract"] = {
+            "request_category": request_category.value,
+            "response_mode": response_mode.value,
+            "recommended_next_steps": recommended_next_steps,
+        }
+        trace.append(
+            AgentTraceStep(
+                agent="orchestrator",
+                status="used",
+                detail=_build_response_contract_trace_detail(
+                    request_category,
+                    response_mode,
+                    recommended_next_steps,
+                ),
+            )
+        )
         return OrchestratorResponse(
             route=AgentRoute.SENSITIVE_REDIRECT,
             intent=intent,
             sensitivity=sensitivity,
-            answer=_build_sensitive_response(sensitivity),
+            request_category=request_category,
+            response_mode=response_mode,
+            answer=_build_sensitive_response(sensitivity, sensitive_case),
+            recommended_next_steps=recommended_next_steps,
             used_agents=used_agents,
             evidence=evidence,
             trace=trace,
@@ -1662,11 +2248,47 @@ async def orchestrate_message(
     )
 
     if route == AgentRoute.OUT_OF_SCOPE:
+        request_category = _derive_request_category(
+            message=payload.message,
+            intent=intent,
+            sensitivity=sensitivity,
+            route=route,
+        )
+        response_mode = _resolve_response_mode(
+            request_category,
+            sensitivity=sensitivity,
+        )
+        recommended_next_steps = _build_recommended_next_steps(
+            intent=intent,
+            route=route,
+            request_category=request_category,
+            response_mode=response_mode,
+            company_records=None,
+        )
+        context["response_contract"] = {
+            "request_category": request_category.value,
+            "response_mode": response_mode.value,
+            "recommended_next_steps": recommended_next_steps,
+        }
+        trace.append(
+            AgentTraceStep(
+                agent="orchestrator",
+                status="used",
+                detail=_build_response_contract_trace_detail(
+                    request_category,
+                    response_mode,
+                    recommended_next_steps,
+                ),
+            )
+        )
         return OrchestratorResponse(
             route=route,
             intent=intent,
             sensitivity=sensitivity,
+            request_category=request_category,
+            response_mode=response_mode,
             answer=_build_out_of_scope_response(intent),
+            recommended_next_steps=recommended_next_steps,
             used_agents=used_agents,
             evidence=evidence,
             trace=trace,
@@ -1800,12 +2422,50 @@ async def orchestrate_message(
         company_result.summary if company_result else None,
         file_summary,
     )
+    request_category = _derive_request_category(
+        message=payload.message,
+        intent=intent,
+        sensitivity=sensitivity,
+        route=route,
+        company_records=company_result.records if company_result else None,
+    )
+    response_mode = _resolve_response_mode(
+        request_category,
+        sensitivity=sensitivity,
+    )
+    recommended_next_steps = _build_recommended_next_steps(
+        intent=intent,
+        route=route,
+        request_category=request_category,
+        response_mode=response_mode,
+        company_records=company_result.records if company_result else None,
+        sensitive_case=sensitive_case,
+    )
+    context["response_contract"] = {
+        "request_category": request_category.value,
+        "response_mode": response_mode.value,
+        "recommended_next_steps": recommended_next_steps,
+    }
+    trace.append(
+        AgentTraceStep(
+            agent="orchestrator",
+            status="used",
+            detail=_build_response_contract_trace_detail(
+                request_category,
+                response_mode,
+                recommended_next_steps,
+            ),
+        )
+    )
 
     return OrchestratorResponse(
         route=route,
         intent=intent,
         sensitivity=sensitivity,
+        request_category=request_category,
+        response_mode=response_mode,
         answer=answer,
+        recommended_next_steps=recommended_next_steps,
         used_agents=used_agents,
         evidence=evidence,
         trace=trace,

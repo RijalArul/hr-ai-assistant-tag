@@ -139,6 +139,27 @@ create table if not exists employees (
     constraint chk_employee_manager_not_self check (manager_id is null or manager_id <> id)
 );
 
+create table if not exists responsibility_routes (
+    id uuid primary key default gen_random_uuid(),
+    company_id uuid not null references companies(id) on delete cascade,
+    topic_key text not null,
+    department_id uuid null references departments(id) on delete set null,
+    primary_employee_id uuid null references employees(id) on delete set null,
+    alternate_employee_id uuid null references employees(id) on delete set null,
+    recommended_channel text,
+    preparation_checklist jsonb not null default '[]'::jsonb,
+    metadata jsonb not null default '{}'::jsonb,
+    is_active boolean not null default true,
+    created_at timestamptz not null default now(),
+    updated_at timestamptz not null default now(),
+    constraint uq_responsibility_routes_company_topic unique (company_id, topic_key),
+    constraint chk_responsibility_route_contacts_present check (
+        primary_employee_id is not null
+        or alternate_employee_id is not null
+        or department_id is not null
+    )
+);
+
 create table if not exists personal_infos (
     id uuid primary key default gen_random_uuid(),
     employee_id uuid not null unique references employees(id) on delete cascade,
@@ -250,6 +271,10 @@ create table if not exists rule_actions (
     summary_template text,
     priority action_priority_enum not null default 'medium',
     delivery_channels delivery_channel_enum[] not null default ARRAY['in_app']::delivery_channel_enum[],
+    suggested_pic_template varchar(100),
+    suggested_next_action_template varchar(500),
+    sla_hours integer,
+    escalation_rule_template varchar(500),
     payload_template jsonb not null default '{}'::jsonb,
     created_at timestamptz not null default now()
 );
@@ -291,6 +316,10 @@ create table if not exists actions (
     priority action_priority_enum not null default 'medium',
     sensitivity sensitivity_level_enum not null default 'low',
     delivery_channels delivery_channel_enum[] not null default ARRAY['in_app']::delivery_channel_enum[],
+    suggested_pic varchar(100),
+    suggested_next_action varchar(500),
+    sla_hours integer,
+    escalation_rule varchar(500),
     payload jsonb not null default '{}'::jsonb,
     execution_result jsonb,
     metadata jsonb not null default '{}'::jsonb,
@@ -368,11 +397,15 @@ create table if not exists company_rules (
     title text not null,
     category text not null,
     content text not null,
+    metadata jsonb not null default '{}'::jsonb,
     effective_date date,
     is_active boolean not null default true,
     created_at timestamptz not null default now(),
     updated_at timestamptz not null default now()
 );
+
+alter table company_rules
+    add column if not exists metadata jsonb not null default '{}'::jsonb;
 
 -- Optional RAG support for company_rules via pgvector.
 -- One rule can be chunked into multiple embeddings.
@@ -543,6 +576,9 @@ create index if not exists idx_company_rules_company_id on company_rules(company
 create index if not exists idx_company_rules_category on company_rules(category);
 create index if not exists idx_company_rules_active on company_rules(is_active);
 create index if not exists idx_company_rules_effective_date on company_rules(effective_date desc);
+create index if not exists idx_responsibility_routes_company_id on responsibility_routes(company_id);
+create index if not exists idx_responsibility_routes_topic_key on responsibility_routes(topic_key);
+create index if not exists idx_responsibility_routes_active on responsibility_routes(is_active);
 
 create index if not exists idx_company_rule_chunks_rule_id on company_rule_chunks(company_rule_id);
 create index if not exists idx_company_rule_chunks_company_id on company_rule_chunks(company_id);
@@ -584,6 +620,11 @@ for each row execute function set_updated_at();
 drop trigger if exists trg_employees_set_updated_at on employees;
 create trigger trg_employees_set_updated_at
 before update on employees
+for each row execute function set_updated_at();
+
+drop trigger if exists trg_responsibility_routes_set_updated_at on responsibility_routes;
+create trigger trg_responsibility_routes_set_updated_at
+before update on responsibility_routes
 for each row execute function set_updated_at();
 
 drop trigger if exists trg_personal_infos_set_updated_at on personal_infos;

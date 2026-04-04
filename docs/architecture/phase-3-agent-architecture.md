@@ -2,6 +2,11 @@
 
 Phase 3 in this repository is implemented as an internal orchestration layer on top of the existing Phase 1 and Phase 2 foundations.
 
+Product alignment note:
+- Phase 3 currently powers the **Employee Support Layer** and **Reasoning Layer**
+- the **HR Operations Layer** stays owned by the Phase 2 action engine plus the Phase 4 conversation/action surface
+- see `docs/architecture/phase-7-product-capability-blueprint-id.md` for the concise capability and boundary map
+
 Bahasa Indonesia workflow guide:
 - `docs/architecture/phase-1-workflow-id.md`
 - `docs/architecture/phase-2-workflow-id.md`
@@ -13,6 +18,7 @@ Current scope:
 - `hr-data-agent` reads structured employee data using `session.employee_id`
 - `company-agent` reads company rules and company structure using `session.company_id`
 - `file-agent` parses local attachments before downstream routing when attachments are supplied
+- the response contract now also distinguishes `request_category`, `response_mode`, and `recommended_next_steps`
 
 Semantic routing status:
 - Stage 1 is already active for semantic intent retrieval and semantic fallback
@@ -44,6 +50,7 @@ trusted session
   -> sensitivity assessment
   -> route selection
   -> hr-data-agent and/or company-agent
+  -> request category + response mode resolution
   -> final synthesized answer
 ```
 
@@ -53,6 +60,13 @@ Routing rules:
 - both -> `mixed`
 - sensitive topic -> `sensitive_redirect`
 - unclear / out of domain -> `out_of_scope`
+
+## Current Response Contract
+
+The current orchestrator response is not only about route selection. It also carries:
+- `request_category` so callers can distinguish informational, guidance, policy reasoning, workflow, sensitive, and decision-support conversations
+- `response_mode` so the answer shape can be tuned as `informational`, `guidance`, `policy_reasoning`, `workflow_intake`, `sensitive_guarded`, or `hr_ops_summary`
+- `recommended_next_steps` so employee-facing channels or future dashboards can render follow-up hints consistently
 
 ## Trust Boundary
 

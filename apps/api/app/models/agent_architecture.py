@@ -31,6 +31,24 @@ class AgentRoute(StrEnum):
     OUT_OF_SCOPE = "out_of_scope"
 
 
+class ConversationRequestCategory(StrEnum):
+    INFORMATIONAL_QUESTION = "informational_question"
+    GUIDANCE_REQUEST = "guidance_request"
+    POLICY_REASONING_REQUEST = "policy_reasoning_request"
+    WORKFLOW_REQUEST = "workflow_request"
+    SENSITIVE_REPORT = "sensitive_report"
+    DECISION_SUPPORT = "decision_support"
+
+
+class ResponseMode(StrEnum):
+    INFORMATIONAL = "informational"
+    GUIDANCE = "guidance"
+    POLICY_REASONING = "policy_reasoning"
+    WORKFLOW_INTAKE = "workflow_intake"
+    SENSITIVE_GUARDED = "sensitive_guarded"
+    HR_OPS_SUMMARY = "hr_ops_summary"
+
+
 class AttachmentInput(BaseModel):
     model_config = ConfigDict(
         json_schema_extra={
@@ -139,7 +157,12 @@ class OrchestratorResponse(BaseModel):
     route: AgentRoute
     intent: IntentAssessment
     sensitivity: SensitivityAssessment
+    request_category: ConversationRequestCategory = (
+        ConversationRequestCategory.INFORMATIONAL_QUESTION
+    )
+    response_mode: ResponseMode = ResponseMode.INFORMATIONAL
     answer: str = Field(min_length=2)
+    recommended_next_steps: list[str] = Field(default_factory=list)
     used_agents: list[str] = Field(default_factory=list)
     evidence: list[EvidenceItem] = Field(default_factory=list)
     trace: list[AgentTraceStep] = Field(default_factory=list)
