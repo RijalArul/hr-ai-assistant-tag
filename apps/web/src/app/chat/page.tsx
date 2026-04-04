@@ -414,21 +414,62 @@ function Row({ label, value, bold, red }: { label: string; value: string; bold?:
 }
 
 // ─── Leave Modal ───────────────────────────────────────────────────────────
-function LeaveModal({ session, onClose }: { session: Session | null; onClose: () => void }) {
+interface TimeOffBalance {
+  leave_type: string;
+  total_days: number;
+  used_days: number;
+  remaining_days: number;
+  year: number;
+}
+interface TimeOffRequest {
+  leave_type: string;
+  total_days: number;
+  start_date: string;
+  end_date: string;
+  status: string;
+  reason: string;
+  year: number;
+}
+interface TimeOffData {
+  year?: number;
+  balances?: TimeOffBalance[];
+  requests?: TimeOffRequest[];
+}
+
+const LEAVE_TYPE_META: Record<string, { label: string; color: string; bg: string }> = {
+  annual_leave:   { label: "Annual Leave",   color: "#10b981", bg: "#ecfdf5" },
+  sick_leave:     { label: "Sick Leave",     color: "#ef4444", bg: "#fef2f2" },
+  personal_leave: { label: "Personal Leave", color: "#8b5cf6", bg: "#f5f3ff" },
+  comp_time:      { label: "Comp Time",      color: "#0d9488", bg: "#f0fdfa" },
+};
+
+function statusColor(s: string) {
+  if (s === "approved") return "#10b981";
+  if (s === "rejected") return "#ef4444";
+  return "#f59e0b";
+}
+
+function LeaveModal({
+  session,
+  timeOffData,
+  onClose,
+}: {
+  session: Session | null;
+  timeOffData: TimeOffData | null;
+  onClose: () => void;
+}) {
   const name = session ? getFirstName(session.email) : "Karyawan";
-  const cards = [
-    { label: "Annual Leave", value: "12.5", unit: "days", color: "#10b981", bg: "#ecfdf5", note: "Next accrual: May 1, 2026" },
-    { label: "Sick Leave", value: "8.0", unit: "days", color: "#ef4444", bg: "#fef2f2", note: "Next accrual: May 1, 2026" },
-    { label: "Personal Leave", value: "3.0", unit: "days", color: "#8b5cf6", bg: "#f5f3ff", note: "Annual allocation" },
-    { label: "Comp Time", value: "16", unit: "hours", color: "#0d9488", bg: "#f0fdfa", note: "Exp: July 31, 2026" },
-  ];
+  const balances = timeOffData?.balances ?? [];
+  const requests = timeOffData?.requests ?? [];
+  const hasData = balances.length > 0;
+
   return (
     <Overlay onClose={onClose}>
-      <div style={{ width: 560, background: "#fff", borderRadius: 16, padding: 28 }}>
+      <div style={{ width: 560, background: "#fff", borderRadius: 16, padding: 28, maxHeight: "85vh", overflowY: "auto" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 20 }}>
           <div>
             <h2 style={{ fontSize: 18, fontWeight: 700, color: "#111827" }}>Leave Details</h2>
-            <p style={{ fontSize: 12, color: "#6b7280", marginTop: 2 }}>{name} • Employee ID: EMP-2587</p>
+            <p style={{ fontSize: 12, color: "#6b7280", marginTop: 2 }}>{name}{timeOffData?.year ? ` • ${timeOffData.year}` : ""}</p>
           </div>
           <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", color: "#9ca3af", padding: 4 }}>
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
@@ -437,28 +478,56 @@ function LeaveModal({ session, onClose }: { session: Session | null; onClose: ()
 
         <p style={{ fontSize: 12, fontWeight: 600, color: "#374151", marginBottom: 12 }}>Current Leave Balance</p>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 20 }}>
-          {cards.map((c) => (
-            <div key={c.label} style={{ background: c.bg, borderRadius: 10, padding: "14px 16px" }}>
-              <p style={{ fontSize: 11, color: "#6b7280", marginBottom: 6 }}>{c.label}</p>
-              <p style={{ fontSize: 24, fontWeight: 700, color: c.color }}>
-                {c.value} <span style={{ fontSize: 13, fontWeight: 500 }}>{c.unit}</span>
-              </p>
-              <p style={{ fontSize: 11, color: "#9ca3af", marginTop: 4 }}>{c.note}</p>
+          {hasData ? balances.map((b) => {
+            const meta = LEAVE_TYPE_META[b.leave_type] ?? { label: b.leave_type, color: "#6b7280", bg: "#f9fafb" };
+            return (
+              <div key={b.leave_type} style={{ background: meta.bg, borderRadius: 10, padding: "14px 16px" }}>
+                <p style={{ fontSize: 11, color: "#6b7280", marginBottom: 6 }}>{meta.label}</p>
+                <p style={{ fontSize: 24, fontWeight: 700, color: meta.color }}>
+                  {b.remaining_days} <span style={{ fontSize: 13, fontWeight: 500 }}>days</span>
+                </p>
+                <p style={{ fontSize: 11, color: "#9ca3af", marginTop: 4 }}>
+                  Used: {b.used_days} / {b.total_days} days
+                </p>
+              </div>
+            );
+          }) : (
+            <div style={{ gridColumn: "1 / -1", background: "#f9fafb", borderRadius: 10, padding: "14px 16px", fontSize: 13, color: "#6b7280" }}>
+              Data cuti tidak tersedia.
             </div>
-          ))}
+          )}
         </div>
 
         <div style={{ background: "#fffbeb", borderRadius: 8, padding: "10px 14px", marginBottom: 16, display: "flex", gap: 10, alignItems: "flex-start" }}>
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#f59e0b" strokeWidth="2" style={{ flexShrink: 0, marginTop: 1 }}><circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" /></svg>
           <p style={{ fontSize: 12, color: "#92400e" }}>
-            <b>Annual Leave Policy:</b> You accrue 1.25 days of annual leave and 0.67 days of sick leave per month. Your next accrual will be processed on May 1, 2026.
+            <b>Annual Leave Policy:</b> Karyawan memperoleh cuti tahunan sesuai kebijakan perusahaan. Hubungi HR untuk informasi akrual lebih lanjut.
           </p>
         </div>
 
-        <p style={{ fontSize: 12, fontWeight: 600, color: "#374151", marginBottom: 8 }}>Recent Leave History</p>
-        <div style={{ fontSize: 12, color: "#6b7280", borderBottom: "1px solid #f3f4f6", paddingBottom: 6, marginBottom: 16 }}>Annual Leave — Mar 20, 2026 (1 day) <span style={{ color: "#10b981", marginLeft: 8, fontWeight: 600 }}>Approved</span></div>
+        {requests.length > 0 && (
+          <>
+            <p style={{ fontSize: 12, fontWeight: 600, color: "#374151", marginBottom: 8 }}>Recent Leave History</p>
+            {requests.map((r, i) => {
+              const meta = LEAVE_TYPE_META[r.leave_type] ?? { label: r.leave_type, color: "#6b7280", bg: "#f9fafb" };
+              const startDate = new Date(r.start_date).toLocaleDateString("id-ID", { day: "numeric", month: "short", year: "numeric" });
+              return (
+                <div
+                  key={i}
+                  style={{ fontSize: 12, color: "#6b7280", borderBottom: "1px solid #f3f4f6", paddingBottom: 8, marginBottom: 8 }}
+                >
+                  {meta.label} — {startDate}{r.total_days > 1 ? ` (${r.total_days} days)` : " (1 day)"}
+                  <span style={{ color: statusColor(r.status), marginLeft: 8, fontWeight: 600, textTransform: "capitalize" }}>
+                    {r.status}
+                  </span>
+                  {r.reason && <span style={{ color: "#9ca3af", marginLeft: 6 }}>• {r.reason}</span>}
+                </div>
+              );
+            })}
+          </>
+        )}
 
-        <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, marginTop: 16 }}>
           <button onClick={onClose} style={{ flex: 1, padding: "9px", border: "1px solid #e5e7eb", borderRadius: 8, background: "#fff", color: "#374151", fontSize: 13, fontWeight: 500, cursor: "pointer" }}>Close</button>
           <button style={{ flex: 1, padding: "9px", border: "none", borderRadius: 8, background: BLUE, color: "#fff", fontSize: 13, fontWeight: 500, cursor: "pointer" }}>Request Leave</button>
         </div>
@@ -738,6 +807,7 @@ export default function ChatPage() {
   const [modal, setModal] = useState<ModalType>(null);
   const [modalContent, setModalContent] = useState<{ content: string; attachment?: MessageAttachment }>({ content: "" });
   const [lastTriggeredActions, setLastTriggeredActions] = useState<Action[]>([]);
+  const [lastHrData, setLastHrData] = useState<Record<string, unknown>>({});
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const activeConvRef = useRef<Conversation | null>(null);
@@ -803,6 +873,8 @@ export default function ChatPage() {
       // Replace dengan response lengkap dari server
       setActiveConv(res.conversation);
       setLastTriggeredActions(res.triggered_actions ?? []);
+      const hrData = ((res.assistant_message.metadata?.orchestration as Record<string, unknown>)?.context as Record<string, unknown>)?.hr_data as Record<string, unknown> | undefined;
+      if (hrData) setLastHrData(hrData);
     } catch {
       // Rollback optimistic message
       setActiveConv((prev) =>
@@ -1000,7 +1072,13 @@ export default function ChatPage() {
           onClose={() => setModal(null)}
         />
       )}
-      {modal === "leave" && <LeaveModal session={session} onClose={() => setModal(null)} />}
+      {modal === "leave" && (
+        <LeaveModal
+          session={session}
+          timeOffData={(lastHrData?.time_off as TimeOffData | undefined) ?? null}
+          onClose={() => setModal(null)}
+        />
+      )}
       {modal === "report" && <ReportModal onClose={() => setModal(null)} />}
 
       <style>{`
