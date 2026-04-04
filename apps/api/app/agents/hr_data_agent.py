@@ -70,10 +70,36 @@ HR_INTENT_TO_TOPIC = {
     ConversationIntent.PAYROLL_INFO: ["payroll"],
     ConversationIntent.PAYROLL_DOCUMENT_REQUEST: ["payroll"],
     ConversationIntent.ATTENDANCE_REVIEW: ["attendance"],
+    ConversationIntent.ATTENDANCE_CORRECTION: ["attendance"],
     ConversationIntent.TIME_OFF_BALANCE: ["time_off"],
     ConversationIntent.TIME_OFF_REQUEST_STATUS: ["time_off"],
+    ConversationIntent.TIME_OFF_SIMULATION: ["time_off"],
     ConversationIntent.PERSONAL_PROFILE: ["profile"],
 }
+
+
+def _extract_days_from_text(message: str) -> int | None:
+    lowered = message.lower()
+    match = re.search(r"(\d+)\s*(hari|day)", lowered)
+    if match:
+        return int(match.group(1))
+
+    word_map = {
+        "satu": 1,
+        "one": 1,
+        "dua": 2,
+        "two": 2,
+        "tiga": 3,
+        "three": 3,
+        "empat": 4,
+        "four": 4,
+        "lima": 5,
+        "five": 5,
+    }
+    for word, val in word_map.items():
+        if f"{word} hari" in lowered or f"{word} day" in lowered:
+            return val
+    return None
 
 
 def _format_rupiah(value: Decimal | int | float | None) -> str:
@@ -179,8 +205,46 @@ def _should_inherit_conversation_context(message: str) -> bool:
         "izin",
         "profil",
         "profile",
+        "posisi",
+        "jabatan",
+        "role",
         "atasan",
         "manager",
+        "manajer",
+        "supervisor",
+        "lead",
+        "mentor",
+        "guide",
+        "onboarding",
+        # Sensitive / reporting – these are standalone topics that should
+        # never inherit context from a previous payroll/attendance chat.
+        "lapor",
+        "melaporkan",
+        "report",
+        "pelecehan",
+        "diskriminasi",
+        "unsafe",
+        "kekerasan",
+        "dibully",
+        "bully",
+        "harassment",
+        "sensitivity",
+        "sensitive",
+        "whistleblow",
+        "pelanggaran",
+        "keluhan",
+        "complaint",
+        # Decision-support
+        "resign",
+        "mengundurkan diri",
+        "burnout",
+        "konflik",
+        "mutasi",
+        # Reimbursement / claim
+        "reimburse",
+        "reimbursement",
+        "klaim",
+        "claim",
     ]
     return not any(signal in lowered for signal in domain_signals)
 
@@ -396,6 +460,107 @@ def _wants_payroll_delta_explanation_with_context(
     )
 
 
+def _detect_payroll_issue_focus(
+    message: str,
+    contextual_message: str,
+) -> str | None:
+    lowered = message.lower()
+    contextual_lowered = contextual_message.lower()
+    payroll_subject_markers = [
+        "gaji",
+        "salary",
+        "payroll",
+        "slip",
+        "payslip",
+        "pay slip",
+    ]
+
+    if any(token in lowered for token in ["slip", "payslip", "pay slip"]) and any(
+        marker in lowered
+        for marker in [
+            "belum",
+            "kenapa",
+            "status",
+            "keluar",
+            "terbit",
+            "muncul",
+            "tersedia",
+        ]
+    ):
+        return "payslip_issue"
+
+    if any(token in lowered for token in ["bpjs kesehatan", "bpjs ketenagakerjaan", "bpjs"]):
+        return "bpjs"
+
+    if any(token in lowered for token in ["pph21", "pph 21", "pajak gaji", "pajak penghasilan"]):
+        return "pph21"
+
+    mentions_payroll_subject = any(token in lowered for token in payroll_subject_markers)
+    has_payment_status_marker = any(
+        token in lowered
+        for token in [
+            "tanggal gajian",
+            "tanggal pembayaran",
+            "status pembayaran",
+            "payment date",
+            "payment status",
+            "gajian kapan",
+            "kapan cair",
+            "dibayar kapan",
+            "belum cair",
+            "belum dibayar",
+            "belum masuk",
+        ]
+    )
+    asks_payment_timing = (
+        any(token in lowered for token in ["kapan", "when"])
+        and mentions_payroll_subject
+        and any(
+            token in lowered
+            for token in ["cair", "dibayar", "paid", "payment", "gajian"]
+        )
+    ) or (mentions_payroll_subject and has_payment_status_marker)
+    if asks_payment_timing:
+        return "payment_timing"
+
+    if any(
+        token in lowered
+        for token in [
+            "potongan",
+            "deduction",
+            "deductions",
+            "rincian",
+            "detail gaji",
+            "detail payroll",
+            "komponen gaji",
+        ]
+    ):
+        return "deduction_breakdown"
+
+    if (
+        any(token in lowered for token in ["yang tadi", "yang itu", "sebelumnya"])
+        and any(
+            token in contextual_lowered
+            for token in ["gaji", "salary", "payroll", "potongan", "bpjs", "pph21"]
+        )
+        and any(
+            token in lowered
+            for token in ["potongan", "bpjs", "pph21", "cair", "dibayar", "slip"]
+        )
+    ):
+        if "bpjs" in lowered:
+            return "bpjs"
+        if "pph21" in lowered or "pph 21" in lowered:
+            return "pph21"
+        if "slip" in lowered or "payslip" in lowered:
+            return "payslip_issue"
+        if any(token in lowered for token in ["cair", "dibayar"]):
+            return "payment_timing"
+        return "deduction_breakdown"
+
+    return None
+
+
 def _serialize_row(row: dict[str, Any]) -> dict[str, Any]:
     return {key: _serialize_value(value) for key, value in row.items()}
 
@@ -431,7 +596,31 @@ def _resolve_topics(
         "payroll": ["gaji", "payroll", "bpjs", "pph21", "slip gaji", "salary"],
         "attendance": ["attendance", "kehadiran", "absen", "terlambat", "telat", "wfh"],
         "time_off": ["cuti", "leave", "izin"],
-        "profile": ["profil", "data saya", "atasan saya", "manager saya", "join date"],
+        "profile": [
+            "profil",
+            "profile",
+            "data saya",
+            "data aku",
+            "atasan saya",
+            "atasan aku",
+            "manager saya",
+            "manager aku",
+            "manajer saya",
+            "manajer aku",
+            "posisi saya",
+            "posisi aku",
+            "jabatan saya",
+            "jabatan aku",
+            "role saya",
+            "role aku",
+            "guide saya",
+            "guide aku",
+            "mentor saya",
+            "mentor aku",
+            "onboarding saya",
+            "onboarding aku",
+            "join date",
+        ],
     }
 
     for topic, keywords in keyword_topics.items():
@@ -439,6 +628,37 @@ def _resolve_topics(
             topics.append(topic)
 
     return topics
+
+
+def _detect_time_off_focus(
+    message: str,
+    contextual_message: str,
+) -> str | None:
+    lowered = _normalize_context_message(contextual_message or message)
+    mentions_leave = any(token in lowered for token in ["cuti", "leave"])
+    mentions_sick_leave = any(
+        token in lowered for token in ["izin sakit", "cuti sakit", "sick leave"]
+    ) or ("sakit" in lowered and "izin" in lowered)
+    asks_approval = any(
+        token in lowered for token in ["approve", "approval", "persetujuan"]
+    ) and any(token in lowered for token in ["siapa", "atasan", "manager", "manajer"])
+    asks_balance_refresh = any(
+        token in lowered
+        for token in ["saldo cuti", "jatah cuti", "leave balance", "sisa cuti"]
+    ) and any(token in lowered for token in ["kapan", "when"]) and any(
+        token in lowered
+        for token in ["nambah", "bertambah", "increase", "refresh", "reset"]
+    )
+
+    if asks_balance_refresh:
+        return "balance_refresh"
+    if mentions_sick_leave and any(
+        token in lowered for token in ["ke siapa", "ke mana", "lapor", "izin", "ajukan"]
+    ):
+        return "sick_leave_guidance"
+    if (mentions_leave or mentions_sick_leave) and asks_approval:
+        return "approval_guidance"
+    return None
 
 
 async def _get_employee_profile(
@@ -463,15 +683,23 @@ async def _get_employee_profile(
                 e.employment_status::text AS employment_status,
                 e.join_date,
                 d.name AS department_name,
-                m.name AS manager_name
+                m.name AS manager_name,
+                pi.phone,
+                pi.address,
+                pi.national_id,
+                pi.tax_id AS npwp,
+                pi.bank_account,
+                pi.emergency_contact,
+                pi.emergency_phone
             FROM employees e
             LEFT JOIN departments d
               ON d.id = e.department_id
             LEFT JOIN employees m
               ON m.id = e.manager_id
+            LEFT JOIN personal_infos pi
+              ON pi.employee_id = e.id
             WHERE e.id = CAST(:employee_id AS uuid)
-              AND e.company_id = CAST(:company_id AS uuid)
-            """
+              AND e.company_id = CAST(:company_id AS uuid)            """
         ),
         {
             "employee_id": session.employee_id,
@@ -706,6 +934,86 @@ def _summarize_profile(profile: dict[str, Any]) -> str:
     )
 
 
+def _summarize_profile_for_request(
+    profile: dict[str, Any],
+    message: str,
+) -> str:
+    lowered = _normalize_context_message(message)
+    manager_name = profile["manager_name"] or "-"
+    department_name = profile["department_name"] or "-"
+    position = profile["position"] or "-"
+
+    if any(
+        token in lowered
+        for token in [
+            "atasan",
+            "manager",
+            "manajer",
+            "supervisor",
+            "lead",
+        ]
+    ) and any(token in lowered for token in ["siapa", "?", "who"]):
+        return f"Atasan langsung kamu saat ini adalah {manager_name}."
+
+    if any(token in lowered for token in ["posisi", "jabatan", "role"]):
+        return f"Posisi kamu saat ini adalah {position} di departemen {department_name}."
+
+    if "join date" in lowered or "tanggal join" in lowered or "kapan join" in lowered:
+        join_date = _parse_record_date(profile.get("join_date"))
+        if join_date:
+            return f"Kamu bergabung dengan perusahaan pada tanggal {_format_date(join_date)}."
+        return "Aku belum menemukan data tanggal bergabung di profilmu."
+
+    if any(token in lowered for token in ["alamat", "address", "domisili"]):
+        address = profile.get("address")
+        if address:
+            return f"Alamat yang tercatat di profilmu saat ini adalah: {address}."
+        return "Aku belum menemukan data alamat di profilmu."
+
+    if any(token in lowered for token in ["nomor hp", "no hp", "telepon", "phone"]):
+        phone = profile.get("phone")
+        if phone:
+            return f"Nomor telepon yang tercatat di profilmu adalah {phone}."
+        return "Aku belum menemukan nomor telepon di profilmu."
+
+    if any(token in lowered for token in ["npwp", "tax id", "pajak"]):
+        npwp = profile.get("npwp")
+        if npwp:
+            return f"Nomor NPWP yang tercatat di profilmu adalah {npwp}."
+        return "Aku belum menemukan nomor NPWP di profilmu."
+
+    if any(token in lowered for token in ["rekening", "bank account", "no rek"]):
+        bank_account = profile.get("bank_account")
+        if bank_account:
+            return f"Rekening bank yang tercatat di profilmu adalah {bank_account}."
+        return "Aku belum menemukan data rekening bank di profilmu."
+
+    if any(
+        token in lowered
+        for token in [
+            "guide",
+            "mentor",
+            "onboarding",
+            "dibimbing",
+            "membimbing",
+            "diguide",
+            "di guide",
+        ]
+    ):
+        if manager_name != "-":
+            return (
+                f"Untuk guide awal, yang paling relevan adalah atasan langsungmu, "
+                f"{manager_name}. Saat ini profilmu tercatat sebagai {position} di "
+                f"departemen {department_name}."
+            )
+        return (
+            "Aku belum melihat atasan langsung yang tercatat di profilmu, jadi untuk "
+            "guide awal sebaiknya mulai dari HR atau lead tim yang menangani onboarding."
+        )
+
+    return _summarize_profile(profile)
+
+
 def _find_previous_payroll_record(
     reference_records: list[dict[str, Any]],
     target_record: dict[str, Any],
@@ -793,6 +1101,178 @@ def _summarize_payroll_difference(
     return summary
 
 
+def _parse_record_date(value: Any) -> date | None:
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str):
+        try:
+            return date.fromisoformat(value)
+        except ValueError:
+            return None
+    return None
+
+
+def _format_payroll_record_period(record: dict[str, Any]) -> str:
+    return _format_period_label(record.get("month"), record.get("year")) or "periode terkait"
+
+
+def _build_payroll_issue_prefix(
+    records: list[dict[str, Any]],
+    target_record: dict[str, Any] | None,
+    *,
+    requested_month: int | None = None,
+    requested_year: int | None = None,
+) -> str:
+    if target_record is None:
+        return ""
+    if records:
+        return ""
+
+    requested_period = _format_period_label(requested_month, requested_year)
+    reference_period = _format_payroll_record_period(target_record)
+    if requested_period:
+        return (
+            f"Aku belum menemukan payroll untuk periode {requested_period}, jadi detail untuk "
+            f"periode itu belum bisa dipastikan. Aku pakai periode {reference_period} sebagai "
+            "referensi terdekat. "
+        )
+    return f"Aku pakai payroll periode {reference_period} sebagai referensi terdekat. "
+
+
+def _build_payroll_change_summary(
+    current_value: int,
+    previous_value: int,
+    *,
+    label: str,
+    previous_period: str,
+) -> str:
+    if current_value == previous_value:
+        return f"Dibanding periode {previous_period}, {label} tetap {_format_rupiah(current_value)}."
+
+    delta = current_value - previous_value
+    direction = "naik" if delta > 0 else "turun"
+    return (
+        f"Dibanding periode {previous_period}, {label} {direction} "
+        f"{_format_rupiah(abs(delta))}."
+    )
+
+
+def _summarize_payroll_issue(
+    payroll_issue_focus: str,
+    records: list[dict[str, Any]],
+    *,
+    requested_month: int | None = None,
+    requested_year: int | None = None,
+    latest_reference_records: list[dict[str, Any]] | None = None,
+) -> str | None:
+    reference_records = latest_reference_records or records
+    target_record = records[0] if records else (reference_records[0] if reference_records else None)
+    if target_record is None:
+        return None
+
+    previous_record = _find_previous_payroll_record(reference_records, target_record)
+    period_label = _format_payroll_record_period(target_record)
+    prefix = _build_payroll_issue_prefix(
+        records,
+        target_record,
+        requested_month=requested_month,
+        requested_year=requested_year,
+    )
+    bpjs_kesehatan = int(target_record.get("bpjs_kesehatan", 0) or 0)
+    bpjs_ketenagakerjaan = int(target_record.get("bpjs_ketenagakerjaan", 0) or 0)
+    total_bpjs = bpjs_kesehatan + bpjs_ketenagakerjaan
+    pph21 = int(target_record.get("pph21", 0) or 0)
+    other_deductions = int(target_record.get("deductions", 0) or 0)
+    total_reduction = total_bpjs + pph21 + other_deductions
+
+    if payroll_issue_focus == "deduction_breakdown":
+        summary = (
+            f"Untuk payroll periode {period_label}, komponen potongan yang tercatat adalah "
+            f"BPJS Kesehatan {_format_rupiah(bpjs_kesehatan)}, BPJS Ketenagakerjaan "
+            f"{_format_rupiah(bpjs_ketenagakerjaan)}, PPH21 {_format_rupiah(pph21)}, "
+            f"dan potongan lain {_format_rupiah(other_deductions)}. Total komponen "
+            f"pengurangnya {_format_rupiah(total_reduction)}."
+        )
+        if previous_record is not None:
+            previous_total = (
+                int(previous_record.get("bpjs_kesehatan", 0) or 0)
+                + int(previous_record.get("bpjs_ketenagakerjaan", 0) or 0)
+                + int(previous_record.get("pph21", 0) or 0)
+                + int(previous_record.get("deductions", 0) or 0)
+            )
+            previous_period = _format_payroll_record_period(previous_record)
+            summary += " " + _build_payroll_change_summary(
+                total_reduction,
+                previous_total,
+                label="total komponen pengurang",
+                previous_period=previous_period,
+            )
+        return prefix + summary
+
+    if payroll_issue_focus == "bpjs":
+        summary = (
+            f"Untuk payroll periode {period_label}, BPJS Kesehatan tercatat "
+            f"{_format_rupiah(bpjs_kesehatan)} dan BPJS Ketenagakerjaan "
+            f"{_format_rupiah(bpjs_ketenagakerjaan)}, jadi total BPJS-nya "
+            f"{_format_rupiah(total_bpjs)}."
+        )
+        if previous_record is not None:
+            previous_total_bpjs = int(previous_record.get("bpjs_kesehatan", 0) or 0) + int(
+                previous_record.get("bpjs_ketenagakerjaan", 0) or 0
+            )
+            summary += " " + _build_payroll_change_summary(
+                total_bpjs,
+                previous_total_bpjs,
+                label="total BPJS",
+                previous_period=_format_payroll_record_period(previous_record),
+            )
+        return prefix + summary
+
+    if payroll_issue_focus == "pph21":
+        summary = f"Untuk payroll periode {period_label}, PPH21 tercatat sebesar {_format_rupiah(pph21)}."
+        if previous_record is not None:
+            previous_pph21 = int(previous_record.get("pph21", 0) or 0)
+            summary += " " + _build_payroll_change_summary(
+                pph21,
+                previous_pph21,
+                label="PPH21",
+                previous_period=_format_payroll_record_period(previous_record),
+            )
+        return prefix + summary
+
+    if payroll_issue_focus == "payment_timing":
+        payment_status = str(target_record.get("payment_status") or "-").strip()
+        payment_date = _parse_record_date(target_record.get("payment_date"))
+        if payment_date is not None:
+            return (
+                prefix
+                + f"Untuk payroll periode {period_label}, status pembayaran tercatat "
+                f"{payment_status} pada {_format_date(payment_date)}."
+            )
+        return (
+            prefix
+            + f"Untuk payroll periode {period_label}, status pembayaran tercatat "
+            f"{payment_status}, tetapi tanggal pembayarannya belum ada di data payroll."
+        )
+
+    if payroll_issue_focus == "payslip_issue":
+        payment_status = str(target_record.get("payment_status") or "-").strip()
+        payment_date = _parse_record_date(target_record.get("payment_date"))
+        status_detail = f"status pembayaran {payment_status}"
+        if payment_date is not None:
+            status_detail += f" pada {_format_date(payment_date)}"
+        return (
+            prefix
+            + f"Untuk payroll periode {period_label}, data payroll yang tersedia menunjukkan "
+            + status_detail
+            + ". Data payroll ini tidak menunjukkan status file payslip secara langsung. "
+            "Kalau yang kamu maksud dokumen payslip-nya, kamu perlu minta payslip atau generate "
+            "PDF secara eksplisit."
+        )
+
+    return None
+
+
 def _summarize_payroll(
     records: list[dict[str, Any]],
     *,
@@ -800,9 +1280,20 @@ def _summarize_payroll(
     requested_year: int | None = None,
     latest_reference_records: list[dict[str, Any]] | None = None,
     wants_delta_explanation: bool = False,
+    payroll_issue_focus: str | None = None,
     retrieval_assessment: dict[str, Any] | None = None,
 ) -> str:
     reference_records = latest_reference_records or records
+    if payroll_issue_focus is not None:
+        issue_summary = _summarize_payroll_issue(
+            payroll_issue_focus,
+            records,
+            requested_month=requested_month,
+            requested_year=requested_year,
+            latest_reference_records=reference_records,
+        )
+        if issue_summary:
+            return issue_summary
 
     if not records:
         requested_period = _format_period_label(requested_month, requested_year)
@@ -911,24 +1402,93 @@ def _summarize_attendance(
     return summary
 
 
-def _summarize_time_off(snapshot: dict[str, Any]) -> str:
+def _summarize_time_off(
+    snapshot: dict[str, Any],
+    *,
+    simulation_days: int | None = None,
+    time_off_focus: str | None = None,
+    profile: dict[str, Any] | None = None,
+) -> str:
     balances = snapshot["balances"]
     requests = snapshot["requests"]
-    if not balances and not requests:
+    manager_name = str((profile or {}).get("manager_name") or "").strip()
+
+    if not balances and not requests and time_off_focus is None:
         return "Aku tidak menemukan saldo atau riwayat pengajuan cuti untuk tahun yang diminta."
 
     parts: list[str] = []
-    if balances:
-        first_balance = balances[0]
+    first_balance = balances[0] if balances else None
+    latest_request = requests[0] if requests else None
+
+    if time_off_focus == "approval_guidance":
+        if manager_name:
+            parts.append(
+                f"Untuk approval cuti, approver awal yang paling relevan adalah atasan langsungmu, {manager_name}."
+            )
+        else:
+            parts.append(
+                "Untuk approval cuti, approver awal yang paling relevan biasanya atasan langsungmu."
+            )
+        if latest_request:
+            parts.append(
+                f"Pengajuan cuti terbaru di data kamu berstatus {latest_request['status']} untuk periode "
+                f"{_format_date(date.fromisoformat(latest_request['start_date']))}."
+            )
+        return " ".join(parts)
+
+    if time_off_focus == "sick_leave_guidance":
+        if manager_name:
+            parts.append(
+                f"Untuk izin sakit, langkah awal paling aman adalah kabari atasan langsungmu, {manager_name}."
+            )
+        else:
+            parts.append(
+                "Untuk izin sakit, langkah awal paling aman adalah kabari atasan langsungmu lebih dulu."
+            )
         parts.append(
-            f"Saldo cuti {snapshot['year']} untuk {first_balance['leave_type']} tersisa "
-            f"{first_balance['remaining_days']} hari dari total {first_balance['total_days']} hari."
+            "Kalau administrasi atau input sistemnya belum jelas, HR biasanya jadi jalur lanjutannya."
         )
-    if requests:
-        latest_request = requests[0]
+        return " ".join(parts)
+
+    if first_balance:
+        remaining = first_balance["remaining_days"]
+        leave_type = first_balance["leave_type"]
+        parts.append(
+            f"Saldo cuti {snapshot['year']} untuk {leave_type} tersisa "
+            f"{remaining} hari dari total {first_balance['total_days']} hari."
+        )
+
+        if time_off_focus == "balance_refresh":
+            parts.append(
+                "Di data HR yang sedang aku lihat, saldo ini tercatat sebagai jatah tahunan, "
+                "jadi biasanya berubah saat ada cuti yang terpakai atau ketika jatah tahun "
+                "kalender baru diberikan, bukan bertambah otomatis sedikit demi sedikit per bulan."
+            )
+            return " ".join(parts)
+
+        if simulation_days is not None:
+            if simulation_days > remaining:
+                parts.append(
+                    f"Jika kamu mengambil {simulation_days} hari, saldomu tidak akan mencukupi "
+                    f"(hanya tersisa {remaining} hari)."
+                )
+            else:
+                new_balance = remaining - simulation_days
+                parts.append(
+                    f"Jika kamu mengambil {simulation_days} hari, estimasi saldo kamu "
+                    f"akan tersisa {new_balance} hari."
+                )
+
+    if latest_request:
         parts.append(
             f"Pengajuan cuti terbaru berstatus {latest_request['status']} untuk periode "
             f"{_format_date(date.fromisoformat(latest_request['start_date']))}."
+        )
+
+    if not parts and time_off_focus == "balance_refresh":
+        return (
+            "Di data HR yang sedang aku lihat, saldo cuti biasanya dicatat sebagai jatah tahunan, "
+            "jadi perubahannya terlihat saat ada cuti yang terpakai atau ketika jatah tahun baru diberikan."
         )
     return " ".join(parts)
 
@@ -972,6 +1532,14 @@ async def run_hr_data_agent(
         contextual_message,
         inherited_user_message,
     )
+    payroll_issue_focus = _detect_payroll_issue_focus(
+        message,
+        contextual_message,
+    )
+    time_off_focus = _detect_time_off_focus(
+        message,
+        contextual_message,
+    )
     wants_latest_relevant_period = _wants_latest_relevant_period(message)
     rolling_window_days = 30 if _wants_rolling_30_day_window(message) else None
 
@@ -1004,12 +1572,16 @@ async def run_hr_data_agent(
     evidence: list[EvidenceItem] = []
     records: dict[str, Any] = {}
     retrieval_assessment: dict[str, Any] = {}
+    profile: dict[str, Any] | None = None
 
-    if "profile" in topics:
+    needs_profile_context = time_off_focus in {"approval_guidance", "sick_leave_guidance"}
+
+    if "profile" in topics or needs_profile_context:
         profile = await _get_employee_profile(db, session)
         if profile is not None:
             records["profile"] = profile
-            summary_parts.append(_summarize_profile(profile))
+            if "profile" in topics:
+                summary_parts.append(_summarize_profile_for_request(profile, message))
             evidence.append(
                 EvidenceItem(
                     source_type="hr_data",
@@ -1100,6 +1672,7 @@ async def run_hr_data_agent(
                 requested_year=payroll_year_filter,
                 latest_reference_records=payroll_reference_records,
                 wants_delta_explanation=wants_payroll_delta_explanation,
+                payroll_issue_focus=payroll_issue_focus,
                 retrieval_assessment=payroll_assessment,
             )
         )
@@ -1256,7 +1829,19 @@ async def run_hr_data_agent(
     if "time_off" in topics:
         time_off_snapshot = await _get_time_off_snapshot(db, session, year)
         records["time_off"] = time_off_snapshot
-        summary_parts.append(_summarize_time_off(time_off_snapshot))
+
+        simulation_days = None
+        if primary_intent == ConversationIntent.TIME_OFF_SIMULATION:
+            simulation_days = _extract_days_from_text(contextual_message)
+
+        summary_parts.append(
+            _summarize_time_off(
+                time_off_snapshot,
+                simulation_days=simulation_days,
+                time_off_focus=time_off_focus,
+                profile=profile,
+            )
+        )
         if time_off_snapshot["balances"]:
             balance = time_off_snapshot["balances"][0]
             evidence.append(

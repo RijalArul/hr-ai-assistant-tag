@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import Annotated, Any, Literal
 from uuid import UUID
@@ -9,6 +10,7 @@ from pydantic import (
     ConfigDict,
     Field,
     HttpUrl,
+    ValidationError,
     field_validator,
     model_validator,
 )
@@ -35,6 +37,19 @@ def _dedupe_preserve_order[T](values: list[T]) -> list[T]:
         result.append(value)
 
     return result
+
+
+_TEMPLATE_TOKEN_PATTERN = re.compile(r"\{\{[^{}]+\}\}|\{[^{}]+\}")
+
+
+def _contains_template_token(value: Any) -> bool:
+    if isinstance(value, str):
+        return _TEMPLATE_TOKEN_PATTERN.search(value) is not None
+    if isinstance(value, list):
+        return any(_contains_template_token(item) for item in value)
+    if isinstance(value, dict):
+        return any(_contains_template_token(item) for item in value.values())
+    return False
 
 
 class DocumentGenerationPayload(BaseModel):
@@ -408,12 +423,19 @@ class RuleActionConfig(BaseModel):
             raise ValueError("payload_template must not define `type`; it is derived from action_type.")
 
         payload_model = ACTION_TYPE_TO_PAYLOAD_MODEL[self.action_type]
-        payload_model.model_validate(
-            {
-                "type": self.action_type.value,
-                **self.payload_template,
-            }
-        )
+        payload_candidate = {
+            "type": self.action_type.value,
+            **self.payload_template,
+        }
+        try:
+            payload_model.model_validate(payload_candidate)
+        except ValidationError:
+            # Rule configs may intentionally store unresolved placeholders
+            # such as `{{start_date}}`; the concrete payload is validated
+            # again after templates/extracted params are materialized.
+            if _contains_template_token(self.payload_template):
+                return self
+            raise
         return self
 
 

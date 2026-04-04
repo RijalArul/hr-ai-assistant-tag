@@ -442,6 +442,61 @@ def _assess_profile_update_request(message: str, lowered: str) -> dict[str, Any]
 
 
 # ---------------------------------------------------------------------------
+# Execution gate for attendance correction request
+# ---------------------------------------------------------------------------
+
+_ATTENDANCE_CORRECTION_VERBS = [
+    "koreksi", "perbaiki", "update", "ubah", "revisi", "lupa", "salah", "telat"
+]
+_ATTENDANCE_CORRECTION_TARGETS = [
+    "absen", "absensi", "check-in", "check-out", "check in", "check out", "kehadiran", "presensi"
+]
+
+
+def _assess_attendance_correction_request(message: str, lowered: str) -> dict[str, Any]:
+    has_verb = any(v in lowered for v in _ATTENDANCE_CORRECTION_VERBS)
+    has_target = any(t in lowered for t in _ATTENDANCE_CORRECTION_TARGETS)
+
+    if not (has_verb and has_target):
+        return {
+            "mode": "not_applicable",
+            "should_trigger": False,
+            "reason": "Message does not contain a clear attendance correction request.",
+        }
+
+    date = _extract_first_date(message)
+    time_match = re.search(r"\b\d{1,2}[:.]\d{2}\b", lowered)
+    time_str = time_match.group(0) if time_match else None
+
+    missing_fields: list[str] = []
+    if date is None:
+        missing_fields.append("date")
+
+    if missing_fields:
+        return {
+            "mode": "missing_info",
+            "should_trigger": False,
+            "reason": "Attendance correction detected but required fields are missing.",
+            "missing_fields": missing_fields,
+            "extracted": {
+                "date": date,
+                "time": time_str,
+            },
+            "follow_up_prompt": "Untuk koreksi absensi, aku butuh tanggal absensi yang ingin diperbaiki. Kejadiannya tanggal berapa?",
+        }
+
+    return {
+        "mode": "execution_request",
+        "should_trigger": True,
+        "reason": "Attendance correction request detected with sufficient info.",
+        "extracted": {
+            "date": date,
+            "time": time_str,
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
 
@@ -473,6 +528,11 @@ def assess_action_execution_intent(
 
     if intent_key == "time_off_request_status":
         return _assess_leave_request(message, lowered)
+
+    if intent_key == "attendance_review" and any(
+        v in lowered for v in _ATTENDANCE_CORRECTION_VERBS
+    ):
+        return _assess_attendance_correction_request(message, lowered)
 
     if intent_key == "company_policy" and any(
         v in lowered for v in _REIMBURSE_TRIGGER_VERBS

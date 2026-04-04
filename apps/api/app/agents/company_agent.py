@@ -78,6 +78,8 @@ DEPARTMENT_KEYWORDS = {
         "payroll",
         "gaji",
         "slip gaji",
+        "slip",
+        "payslip",
         "bpjs",
         "pph21",
         "benefit",
@@ -171,6 +173,7 @@ CONTACT_GUIDANCE_TOPICS = [
             "gaji",
             "salary",
             "slip gaji",
+            "slip",
             "payslip",
             "bpjs",
             "pph21",
@@ -250,6 +253,34 @@ CONTACT_GUIDANCE_TOPICS = [
         ),
     },
     {
+        "key": "leave_operations",
+        "department_name": "human resources",
+        "keywords": [
+            "cuti",
+            "leave",
+            "izin sakit",
+            "cuti sakit",
+            "sick leave",
+            "saldo cuti",
+            "jatah cuti",
+            "leave balance",
+            "approve",
+            "approval",
+            "persetujuan",
+        ],
+        "recommended_channel": "chat atasan langsung atau email internal HR operations",
+        "preparation_checklist": [
+            "Siapkan jenis cuti, tanggal, dan konteks singkat kebutuhanmu.",
+            "Kalau menyangkut izin sakit, siapkan juga dokumen pendukung seperti surat dokter bila sudah ada.",
+        ],
+        "summary_template": (
+            "Untuk pengajuan cuti, izin sakit, approval cuti, atau pertanyaan saldo cuti, "
+            "kamu bisa mulai dari {contact_name} di departemen {department_name}. Kalau "
+            "ini menyangkut persetujuan personal, langkah awal paling aman tetap lewat "
+            "atasan langsungmu."
+        ),
+    },
+    {
         "key": "hr_operations",
         "department_name": "human resources",
         "keywords": [
@@ -275,6 +306,34 @@ CONTACT_GUIDANCE_TOPICS = [
         "summary_template": (
             "Untuk urusan administrasi HR, onboarding, cuti, atau policy internal, kamu "
             "bisa mulai dari {contact_name} di departemen {department_name}."
+        ),
+    },
+    {
+        "key": "attendance_correction",
+        "department_name": "human resources",
+        "keywords": [
+            "lupa absen",
+            "lupa check-in",
+            "lupa check in",
+            "salah absen",
+            "koreksi absen",
+            "update absen",
+            "lupa lapor",
+            "salah status",
+            "harusnya wfh",
+            "harusnya wfo",
+            "correction",
+        ],
+        "recommended_channel": "chat atasan langsung atau portal internal HR",
+        "preparation_checklist": [
+            "Siapkan tanggal absensi yang salah.",
+            "Tentukan status yang benar (WFH/WFO/Sakit).",
+            "Berikan alasan singkat koreksi (misal: lupa check-in).",
+        ],
+        "summary_template": (
+            "Untuk urusan lupa absen, lupa check-in, salah absen, koreksi absen, update absen, lupa lapor, "
+            "salah status, harusnya wfh, harusnya wfo, atau correction, jalur tercepat biasanya lewat {contact_name} "
+            "di departemen {department_name} atau portal HR."
         ),
     },
 ]
@@ -371,6 +430,17 @@ POLICY_REASONING_CASE_TYPES = [
         ],
     },
     {
+        "key": "sick_leave",
+        "label": "cuti sakit / izin sakit",
+        "category": "leave",
+        "keywords": [
+            "izin sakit",
+            "cuti sakit",
+            "sick leave",
+            "surat dokter",
+        ],
+    },
+    {
         "key": "allowance",
         "label": "tunjangan / allowance",
         "category": "payroll",
@@ -417,10 +487,16 @@ POLICY_REQUIRED_DOCUMENT_HINTS = [
     ("kwitansi", "kwitansi"),
     ("kuitansi", "kuitansi"),
     ("receipt", "receipt"),
+    ("e-receipt", "e-receipt"),
     ("invoice", "invoice"),
     ("bukti bayar", "bukti bayar"),
+    ("bukti pembayaran", "bukti pembayaran"),
     ("surat dokter", "surat dokter"),
     ("resep", "resep"),
+    ("karcis tol", "karcis tol"),
+    ("struk parkir", "struk parkir"),
+    ("bill", "bill"),
+    ("tagihan", "tagihan"),
 ]
 
 POLICY_EXCLUSION_HINTS = [
@@ -793,8 +869,47 @@ def _extract_policy_case(message: str) -> dict[str, Any] | None:
     }
 
 
+def _detect_leave_operational_policy_focus(message: str) -> str | None:
+    lowered = _normalize_text(message)
+    mentions_balance = any(
+        _contains_term(lowered, keyword)
+        for keyword in ["saldo cuti", "jatah cuti", "leave balance", "sisa cuti"]
+    )
+    asks_balance_refresh = any(_contains_term(lowered, keyword) for keyword in ["kapan", "when"]) and any(
+        _contains_term(lowered, keyword)
+        for keyword in ["nambah", "bertambah", "increase", "refresh", "reset"]
+    )
+    mentions_sick_leave = any(
+        _contains_term(lowered, keyword)
+        for keyword in ["izin sakit", "cuti sakit", "sick leave"]
+    ) or ("sakit" in lowered and "izin" in lowered)
+    asks_approval = any(
+        _contains_term(lowered, keyword)
+        for keyword in ["approve", "approval", "persetujuan"]
+    ) and any(_contains_term(lowered, keyword) for keyword in ["siapa", "jalur", "harus"])
+    mentions_leave = any(_contains_term(lowered, keyword) for keyword in ["cuti", "leave", "izin"])
+
+    if mentions_balance and asks_balance_refresh:
+        return "balance_refresh"
+    if mentions_sick_leave and any(
+        _contains_term(lowered, keyword)
+        for keyword in ["ke siapa", "ke mana", "lapor", "ajukan", "izin"]
+    ):
+        return "sick_leave_guidance"
+    if mentions_leave and asks_approval:
+        return "approval_chain"
+    return None
+
+
 def _detect_contact_guidance_topic(message: str) -> dict[str, Any] | None:
     lowered = _normalize_text(message)
+    if "sakit" in lowered and any(
+        _contains_term(lowered, keyword) for keyword in ["izin", "lapor"]
+    ):
+        for topic in CONTACT_GUIDANCE_TOPICS:
+            if topic["key"] == "leave_operations":
+                return topic
+
     for topic in CONTACT_GUIDANCE_TOPICS:
         if any(_contains_term(lowered, keyword) for keyword in topic["keywords"]):
             return topic
@@ -1510,6 +1625,10 @@ def _build_policy_metadata(rule: dict[str, Any]) -> dict[str, Any]:
         "eligible_levels": eligible_levels,
         "required_documents": required_documents,
         "constraints": constraints,
+        "approval_chain": _coerce_text_list(explicit_metadata.get("approval_chain")),
+        "simulation_mode": bool(explicit_metadata.get("simulation_mode")),
+        "affects_balance": bool(explicit_metadata.get("affects_balance")),
+        "balance_type": str(explicit_metadata.get("balance_type") or "").strip() or None,
     }
 
 
@@ -2017,6 +2136,10 @@ def _evaluate_policy_reasoning(
         "case_match_score": case_match_score,
         "constraints_triggered": triggered_constraints,
         "next_action": next_action,
+        "approval_chain": policy_metadata.get("approval_chain"),
+        "simulation_mode": policy_metadata.get("simulation_mode"),
+        "affects_balance": policy_metadata.get("affects_balance"),
+        "balance_type": policy_metadata.get("balance_type"),
     }
 
 
@@ -2032,6 +2155,9 @@ def _summarize_policy_reasoning(reasoning: dict[str, Any]) -> str:
     frequency_limit_text = _format_frequency_limit(reasoning.get("policy_frequency_limit"))
     detected_employee_level = str(reasoning.get("detected_employee_level") or "").strip()
     eligible_levels = _coerce_text_list(reasoning.get("eligible_levels"))
+
+    approval_chain = _coerce_text_list(reasoning.get("approval_chain"))
+    simulation_mode = bool(reasoning.get("simulation_mode"))
 
     if eligibility == "eligible":
         lead = f"Kasus {case_label} ini kemungkinan eligible."
@@ -2069,8 +2195,106 @@ def _summarize_policy_reasoning(reasoning: dict[str, Any]) -> str:
         parts.append(
             "Dokumen yang sebaiknya disiapkan: " + ", ".join(required_documents) + "."
         )
+    if approval_chain:
+        parts.append(
+            "Jalur persetujuan yang diperlukan: " + " -> ".join(approval_chain) + "."
+        )
+    if simulation_mode:
+        parts.append(
+            "Aku bisa membantumu mensimulasikan pengajuan ini jika kamu memberikan detail tanggal atau nominal yang lebih spesifik."
+        )
     if reasoning.get("next_action"):
         parts.append(str(reasoning["next_action"]))
+    return " ".join(parts)
+
+
+def _select_leave_rule(
+    matched_rules: list[dict[str, Any]],
+    *,
+    preferred_case_types: list[str],
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    leave_candidates: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    for rule in matched_rules:
+        if str(rule.get("category") or "").strip().lower() != "leave":
+            continue
+        leave_candidates.append((rule, _build_policy_metadata(rule)))
+
+    if not leave_candidates:
+        return None, None
+
+    for case_type in preferred_case_types:
+        for rule, metadata in leave_candidates:
+            if metadata.get("case_type") == case_type:
+                return rule, metadata
+
+    return leave_candidates[0]
+
+
+def _summarize_leave_operational_policy(
+    message: str,
+    matched_rules: list[dict[str, Any]],
+) -> str | None:
+    focus = _detect_leave_operational_policy_focus(message)
+    if focus is None:
+        return None
+
+    preferred_case_types = (
+        ["annual_leave"]
+        if focus in {"balance_refresh", "approval_chain"}
+        else ["sick_leave", "annual_leave"]
+    )
+    rule, metadata = _select_leave_rule(
+        matched_rules,
+        preferred_case_types=preferred_case_types,
+    )
+    if rule is None or metadata is None:
+        return None
+
+    rule_title = str(rule.get("title") or "policy cuti")
+    approval_chain = _coerce_text_list(metadata.get("approval_chain")) or ["atasan langsung"]
+    constraints = _coerce_json_object(metadata.get("constraints"))
+    required_documents = _coerce_text_list(metadata.get("required_documents"))
+
+    if focus == "balance_refresh":
+        parts = [
+            f"Untuk pertanyaan saldo cuti, policy yang paling relevan adalah {rule_title}.",
+            "Di policy ini, jatah cuti tahunan dibaca per tahun kalender, jadi bukan model yang bertambah sedikit demi sedikit setiap bulan.",
+        ]
+        policy_limit_text = _format_policy_limit(metadata.get("amount_limit"))
+        if policy_limit_text:
+            parts.append(f"Jatah dasarnya {policy_limit_text}.")
+        min_tenure_months = _coerce_int(constraints.get("min_tenure_months"))
+        if min_tenure_months is not None:
+            parts.append(
+                f"Cuti tahunan baru bisa dipakai setelah melewati {min_tenure_months} bulan masa probation."
+            )
+        if constraints.get("carry_over_allowed") is False:
+            parts.append("Sisa cuti tidak dibawa ke tahun berikutnya.")
+        return " ".join(parts)
+
+    if focus == "approval_chain":
+        parts = [
+            f"Untuk cuti, jalur persetujuan yang tercatat di {rule_title} adalah {' -> '.join(approval_chain)}."
+        ]
+        request_notice_days = _coerce_int(constraints.get("request_notice_days"))
+        if request_notice_days is not None:
+            parts.append(
+                f"Pengajuan sebaiknya diajukan minimal {request_notice_days} hari kerja sebelumnya lewat sistem HR."
+            )
+        return " ".join(parts)
+
+    parts = [
+        f"Untuk izin sakit, policy yang paling relevan adalah {rule_title}.",
+        "Langkah awal paling aman tetap kabari atasan langsungmu terlebih dulu.",
+    ]
+    if required_documents:
+        parts.append(
+            "Dokumen yang biasanya diminta: " + ", ".join(required_documents) + "."
+        )
+    if bool(constraints.get("digital_submission_allowed")):
+        parts.append("Dokumen pendukung bisa dikirim secara digital kalau dibutuhkan.")
+    if metadata.get("affects_balance") is False:
+        parts.append("Cuti sakit ini tidak mengurangi jatah cuti tahunan.")
     return " ".join(parts)
 
 
@@ -2343,6 +2567,8 @@ def _wants_policy(message: str) -> bool:
     lowered = _normalize_text(message)
     if any(keyword in lowered for keyword in POLICY_EXPLICIT_KEYWORDS):
         return True
+    if _detect_leave_operational_policy_focus(message) is not None:
+        return True
     if _wants_contact_guidance(message):
         return False
     if _extract_policy_case(message) is not None:
@@ -2421,7 +2647,11 @@ async def run_company_agent(
             records["policy_reasoning"] = policy_reasoning
             policy_summary = _summarize_policy_reasoning(policy_reasoning)
         else:
-            policy_summary = _summarize_rules(matched_rules)
+            leave_operational_summary = _summarize_leave_operational_policy(
+                message,
+                matched_rules,
+            )
+            policy_summary = leave_operational_summary or _summarize_rules(matched_rules)
             if policy_assessment["status"] == "partial":
                 policy_summary = f"{policy_assessment['reason']} {policy_summary}"
         summary_parts.append(policy_summary)

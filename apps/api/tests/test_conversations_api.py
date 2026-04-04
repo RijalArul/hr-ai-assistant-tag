@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "apps" / "api"))
@@ -27,9 +28,11 @@ from app.models import (
     IntentAssessment,
     OrchestratorRequest,
     ResponseMode,
+    RuleActionConfig,
     SensitivityAssessment,
 )
 from app.agents.company_agent import run_company_agent
+from app.services.cache import close_cache_registry
 from app.services.db import get_db
 from app.services.minimax import ProviderClassificationResult
 from app.services.object_storage import StorageUploadResult
@@ -589,6 +592,7 @@ async def _noop_lifespan(_app):
 
 class ConversationsApiTests(IsolatedAsyncioTestCase):
     def setUp(self) -> None:
+        close_cache_registry()
         self.db = FakeAsyncSession()
         self.session = SessionContext(
             employee_id="20000000-0000-0000-0000-000000000004",
@@ -613,6 +617,7 @@ class ConversationsApiTests(IsolatedAsyncioTestCase):
         self.client.close()
         app.dependency_overrides.clear()
         app.router.lifespan_context = self.original_lifespan
+        close_cache_registry()
 
     def _create_conversation(self, *, title: str = "Test conversation") -> str:
         response = self.client.post(
@@ -1595,6 +1600,101 @@ class ConversationsApiTests(IsolatedAsyncioTestCase):
         self.assertIn("net pay turun", content)
         self.assertIn("potongan naik", content)
 
+    def test_payroll_question_breaks_down_deduction_components(self) -> None:
+        conversation_id = self._create_conversation(title="Payroll deduction breakdown test")
+
+        with patch(
+            "app.agents.orchestrator.classify_with_minimax",
+            new=AsyncMock(return_value=None),
+        ):
+            response = self.client.post(
+                f"/api/v1/conversations/{conversation_id}/messages",
+                json={
+                    "message": "Potongan gaji saya apa saja bulan Maret 2026?",
+                    "attachments": [],
+                    "metadata": {"channel": "test"},
+                },
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        content = payload["assistant_message"]["content"]
+        self.assertEqual(payload["orchestration"]["route"], "hr_data")
+        self.assertIn("BPJS Kesehatan", content)
+        self.assertIn("BPJS Ketenagakerjaan", content)
+        self.assertIn("PPH21", content)
+        self.assertIn("potongan lain", content)
+
+    def test_payroll_question_reports_payment_date(self) -> None:
+        conversation_id = self._create_conversation(title="Payroll payment date test")
+
+        with patch(
+            "app.agents.orchestrator.classify_with_minimax",
+            new=AsyncMock(return_value=None),
+        ):
+            response = self.client.post(
+                f"/api/v1/conversations/{conversation_id}/messages",
+                json={
+                    "message": "Kapan gaji Maret 2026 cair?",
+                    "attachments": [],
+                    "metadata": {"channel": "test"},
+                },
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        content = payload["assistant_message"]["content"]
+        self.assertEqual(payload["orchestration"]["route"], "hr_data")
+        self.assertIn("status pembayaran tercatat paid", content)
+        self.assertIn("27 Maret 2026", content)
+
+    def test_payroll_question_not_paid_complaint_uses_payment_status_explanation(self) -> None:
+        conversation_id = self._create_conversation(title="Payroll not paid complaint test")
+
+        with patch(
+            "app.agents.orchestrator.classify_with_minimax",
+            new=AsyncMock(return_value=None),
+        ):
+            response = self.client.post(
+                f"/api/v1/conversations/{conversation_id}/messages",
+                json={
+                    "message": "Kenapa gaji saya belum cair?",
+                    "attachments": [],
+                    "metadata": {"channel": "test"},
+                },
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        content = payload["assistant_message"]["content"]
+        self.assertEqual(payload["orchestration"]["route"], "hr_data")
+        self.assertIn("status pembayaran tercatat paid", content)
+        self.assertNotIn("net pay tidak lebih rendah", content)
+
+    def test_payslip_issue_question_uses_payroll_issue_explanation(self) -> None:
+        conversation_id = self._create_conversation(title="Payslip issue explanation test")
+
+        with patch(
+            "app.agents.orchestrator.classify_with_minimax",
+            new=AsyncMock(return_value=None),
+        ):
+            response = self.client.post(
+                f"/api/v1/conversations/{conversation_id}/messages",
+                json={
+                    "message": "Slip saya belum keluar kenapa?",
+                    "attachments": [],
+                    "metadata": {"channel": "test"},
+                },
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        content = payload["assistant_message"]["content"]
+        self.assertEqual(payload["orchestration"]["route"], "hr_data")
+        self.assertEqual(payload["orchestration"]["intent"]["primary_intent"], "payroll_info")
+        self.assertIn("status file payslip", content)
+        self.assertIn("minta payslip", content)
+
     async def test_hr_data_agent_early_month_attendance_average_uses_last_complete_period(self) -> None:
         class _FixedDateTime(datetime):
             @classmethod
@@ -1701,6 +1801,163 @@ class ConversationsApiTests(IsolatedAsyncioTestCase):
         self.assertEqual(payroll_mock.await_count, 1)
         self.assertEqual(payroll_mock.await_args.args[2:], (3, 2026))
         self.assertIn("Maret 2026", result.summary)
+
+    async def test_hr_data_agent_profile_question_returns_direct_manager_answer(self) -> None:
+        with patch(
+            "app.agents.hr_data_agent._get_employee_profile",
+            new=AsyncMock(
+                return_value={
+                    "employee_id": "20000000-0000-0000-0000-000000000004",
+                    "name": "Fakhrul Muhammad Rijal",
+                    "position": "Software Engineer",
+                    "department_name": "Engineering",
+                    "employment_status": "active",
+                    "manager_name": "Budi Santoso",
+                }
+            ),
+        ):
+            result = await run_hr_data_agent(
+                self.db,
+                self.session,
+                "Atasan aku siapa?",
+                ConversationIntent.PERSONAL_PROFILE,
+            )
+
+        self.assertEqual(result.topics, ["profile"])
+        self.assertEqual(result.summary, "Atasan langsung kamu saat ini adalah Budi Santoso.")
+
+    async def test_hr_data_agent_onboarding_guide_question_uses_manager_as_default_guide(self) -> None:
+        with patch(
+            "app.agents.hr_data_agent._get_employee_profile",
+            new=AsyncMock(
+                return_value={
+                    "employee_id": "20000000-0000-0000-0000-000000000004",
+                    "name": "Fakhrul Muhammad Rijal",
+                    "position": "Software Engineer",
+                    "department_name": "Engineering",
+                    "employment_status": "active",
+                    "manager_name": "Budi Santoso",
+                }
+            ),
+        ):
+            result = await run_hr_data_agent(
+                self.db,
+                self.session,
+                "Aku karyawan baru di perusahaan ini, aku harus di guide siapa?",
+                ConversationIntent.PERSONAL_PROFILE,
+            )
+
+        self.assertEqual(result.topics, ["profile"])
+        self.assertIn("Budi Santoso", result.summary)
+        self.assertIn("guide awal", result.summary.lower())
+
+    async def test_hr_data_agent_leave_approval_question_uses_manager_as_initial_approver(self) -> None:
+        with (
+            patch(
+                "app.agents.hr_data_agent._get_employee_profile",
+                new=AsyncMock(
+                    return_value={
+                        "employee_id": "20000000-0000-0000-0000-000000000004",
+                        "name": "Fakhrul Muhammad Rijal",
+                        "position": "Software Engineer",
+                        "department_name": "Engineering",
+                        "employment_status": "active",
+                        "manager_name": "Budi Santoso",
+                    }
+                ),
+            ),
+            patch(
+                "app.agents.hr_data_agent._get_time_off_snapshot",
+                new=AsyncMock(
+                    return_value={
+                        "year": 2026,
+                        "balances": [],
+                        "requests": [
+                            {
+                                "leave_type": "annual_leave",
+                                "status": "approved",
+                                "start_date": "2026-03-20",
+                            }
+                        ],
+                    }
+                ),
+            ),
+        ):
+            result = await run_hr_data_agent(
+                self.db,
+                self.session,
+                "Atasan yang approve cuti saya siapa?",
+                ConversationIntent.TIME_OFF_REQUEST_STATUS,
+            )
+
+        self.assertIn("Budi Santoso", result.summary)
+        self.assertIn("approval cuti", result.summary.lower())
+        self.assertIn("approved", result.summary.lower())
+
+    async def test_hr_data_agent_sick_leave_guidance_uses_manager_as_first_step(self) -> None:
+        with (
+            patch(
+                "app.agents.hr_data_agent._get_employee_profile",
+                new=AsyncMock(
+                    return_value={
+                        "employee_id": "20000000-0000-0000-0000-000000000004",
+                        "name": "Fakhrul Muhammad Rijal",
+                        "position": "Software Engineer",
+                        "department_name": "Engineering",
+                        "employment_status": "active",
+                        "manager_name": "Budi Santoso",
+                    }
+                ),
+            ),
+            patch(
+                "app.agents.hr_data_agent._get_time_off_snapshot",
+                new=AsyncMock(
+                    return_value={
+                        "year": 2026,
+                        "balances": [],
+                        "requests": [],
+                    }
+                ),
+            ),
+        ):
+            result = await run_hr_data_agent(
+                self.db,
+                self.session,
+                "Saya mau izin sakit, ke mana saya harus izin?",
+                ConversationIntent.TIME_OFF_REQUEST_STATUS,
+            )
+
+        self.assertIn("Budi Santoso", result.summary)
+        self.assertIn("izin sakit", result.summary.lower())
+        self.assertIn("hr", result.summary.lower())
+
+    async def test_hr_data_agent_leave_balance_refresh_explains_yearly_snapshot(self) -> None:
+        with patch(
+            "app.agents.hr_data_agent._get_time_off_snapshot",
+            new=AsyncMock(
+                return_value={
+                    "year": 2026,
+                    "balances": [
+                        {
+                            "leave_type": "annual_leave",
+                            "remaining_days": 11,
+                            "total_days": 12,
+                            "year": 2026,
+                        }
+                    ],
+                    "requests": [],
+                }
+            ),
+        ):
+            result = await run_hr_data_agent(
+                self.db,
+                self.session,
+                "When will my leave balance increase?",
+                ConversationIntent.TIME_OFF_BALANCE,
+            )
+
+        self.assertIn("jatah tahunan", result.summary.lower())
+        self.assertIn("tahun kalender", result.summary.lower())
 
     async def test_hr_data_agent_explicit_period_overrides_inherited_history_period(self) -> None:
         payroll_mock = AsyncMock(
@@ -2452,6 +2709,176 @@ class ConversationsApiTests(IsolatedAsyncioTestCase):
         self.assertGreaterEqual(len(result.records["preparation_checklist"]), 2)
         self.assertIn("referral hiring", result.summary.lower())
 
+    async def test_company_agent_slip_issue_guidance_maps_to_payroll_benefits(self) -> None:
+        load_structure_mock = AsyncMock(
+            return_value=[
+                {
+                    "department_id": "dept-hr",
+                    "department_name": "Human Resources",
+                    "parent_department_name": None,
+                    "head_employee_name": "Siti Rahayu",
+                },
+                {
+                    "department_id": "dept-it",
+                    "department_name": "IT",
+                    "parent_department_name": None,
+                    "head_employee_name": "Budi Santoso",
+                },
+            ]
+        )
+        load_rules_mock = AsyncMock(return_value=[])
+
+        with (
+            patch(
+                "app.agents.company_agent._load_company_structure",
+                new=load_structure_mock,
+            ),
+            patch(
+                "app.agents.company_agent._load_company_rules",
+                new=load_rules_mock,
+            ),
+            patch(
+                "app.agents.company_agent._search_rule_chunks_by_vector",
+                new=AsyncMock(return_value=[]),
+            ),
+        ):
+            result = await run_company_agent(
+                self.db,
+                self.session,
+                "Kalau slip saya belum keluar harus ke siapa?",
+            )
+
+        self.assertEqual(load_rules_mock.await_count, 0)
+        self.assertEqual(result.retrieval_mode, "structure_lookup")
+        self.assertTrue(result.records["contact_guidance_requested"])
+        self.assertEqual(result.records["contact_guidance_topic"], "payroll_benefits")
+        self.assertIn("payroll", result.summary.lower())
+
+    async def test_company_agent_leave_balance_refresh_question_uses_operational_leave_policy_summary(self) -> None:
+        matched_rule = {
+            "id": "rule-leave-annual",
+            "title": "Kebijakan Cuti Tahunan",
+            "category": "leave",
+            "content": (
+                "Karyawan tetap berhak atas 12 hari cuti tahunan per tahun kalender. "
+                "Cuti tahunan dapat diambil setelah melewati masa probation selama 3 bulan. "
+                "Cuti yang tidak diambil tidak dapat dibawa ke tahun berikutnya."
+            ),
+            "metadata": {
+                "policy_key": "leave.annual_leave",
+                "case_type": "annual_leave",
+                "coverage_type": "entitlement",
+                "amount_limit": {"max_value": 12, "unit": "day", "period": "year"},
+                "eligible_levels": ["permanent", "contract", "intern"],
+                "required_documents": [],
+                "constraints": {"min_tenure_months": 3, "carry_over_allowed": False},
+                "simulation_mode": True,
+                "affects_balance": True,
+                "balance_type": "annual_leave",
+                "approval_chain": ["atasan langsung"],
+            },
+            "effective_date": "2026-01-01",
+            "is_active": True,
+            "matched_terms": ["leave balance", "cuti"],
+            "ranking_score": 9,
+        }
+
+        with (
+            patch(
+                "app.agents.company_agent._search_rule_chunks_by_vector",
+                new=AsyncMock(return_value=[]),
+            ),
+            patch(
+                "app.agents.company_agent._load_company_rules",
+                new=AsyncMock(return_value=[matched_rule]),
+            ),
+            patch(
+                "app.agents.company_agent._rank_rules",
+                return_value=[matched_rule],
+            ),
+        ):
+            result = await run_company_agent(
+                self.db,
+                self.session,
+                "When will my leave balance increase?",
+            )
+
+        self.assertEqual(result.retrieval_mode, "policy_lookup")
+        self.assertIn("per tahun kalender", result.summary.lower())
+        self.assertIn("setiap bulan", result.summary.lower())
+        self.assertIn("12 hari per tahun", result.summary.lower())
+
+    async def test_company_agent_sick_leave_guidance_uses_leave_operations_topic_and_policy_summary(self) -> None:
+        matched_rule = {
+            "id": "rule-leave-sick",
+            "title": "Kebijakan Cuti Sakit",
+            "category": "leave",
+            "content": (
+                "Karyawan berhak atas cuti sakit berbayar dengan syarat melampirkan surat "
+                "keterangan dokter dan dokumen dapat dikirimkan secara digital."
+            ),
+            "metadata": {
+                "policy_key": "leave.sick_leave",
+                "case_type": "sick_leave",
+                "coverage_type": "entitlement",
+                "eligible_levels": ["permanent", "contract", "intern"],
+                "required_documents": ["surat dokter"],
+                "constraints": {"digital_submission_allowed": True},
+                "simulation_mode": True,
+                "affects_balance": False,
+                "approval_chain": ["atasan langsung"],
+            },
+            "effective_date": "2026-01-01",
+            "is_active": True,
+            "matched_terms": ["izin sakit"],
+            "ranking_score": 9,
+        }
+        load_structure_mock = AsyncMock(
+            return_value=[
+                {
+                    "department_id": "dept-hr",
+                    "department_name": "Human Resources",
+                    "parent_department_name": None,
+                    "head_employee_name": "Siti Rahayu",
+                }
+            ]
+        )
+
+        with (
+            patch(
+                "app.agents.company_agent._search_rule_chunks_by_vector",
+                new=AsyncMock(return_value=[]),
+            ),
+            patch(
+                "app.agents.company_agent._load_company_rules",
+                new=AsyncMock(return_value=[matched_rule]),
+            ),
+            patch(
+                "app.agents.company_agent._rank_rules",
+                return_value=[matched_rule],
+            ),
+            patch(
+                "app.agents.company_agent._load_company_structure",
+                new=load_structure_mock,
+            ),
+            patch(
+                "app.agents.company_agent._load_responsibility_routes",
+                new=AsyncMock(return_value=[]),
+            ),
+        ):
+            result = await run_company_agent(
+                self.db,
+                self.session,
+                "Saya mau izin sakit, ke mana saya harus izin?",
+            )
+
+        self.assertEqual(result.retrieval_mode, "mixed_lookup")
+        self.assertTrue(result.records["contact_guidance_requested"])
+        self.assertEqual(result.records["contact_guidance_topic"], "leave_operations")
+        self.assertIn("atasan langsung", result.summary.lower())
+        self.assertIn("surat dokter", result.summary.lower())
+        self.assertIn("human resources", result.summary.lower())
+
     async def test_company_agent_guidance_prefers_functional_owner_route_over_department_head(self) -> None:
         load_structure_mock = AsyncMock(
             return_value=[
@@ -2594,6 +3021,189 @@ class ConversationsApiTests(IsolatedAsyncioTestCase):
             result.context["response_contract"]["response_mode"],
             ResponseMode.GUIDANCE.value,
         )
+
+    async def test_orchestrator_promotes_payroll_issue_guidance_request_to_mixed(self) -> None:
+        semantic_mock = AsyncMock(
+            return_value=SemanticIntentResult(
+                candidates=[],
+                retrieval_mode="disabled",
+                fallback_reason="test",
+            )
+        )
+        capability_mock = AsyncMock(
+            return_value=AgentCapabilityResult(
+                candidates=[],
+                retrieval_mode="disabled",
+                fallback_reason="test",
+            )
+        )
+        hr_agent_mock = AsyncMock(
+            return_value=HRDataAgentResult(
+                topics=["payroll"],
+                summary="Untuk payroll periode Maret 2026, status pembayaran tercatat paid pada 27 Maret 2026.",
+                records={"payroll": [{"month": 3, "year": 2026, "payment_status": "paid"}]},
+                evidence=[],
+            )
+        )
+        company_agent_mock = AsyncMock(
+            return_value=CompanyAgentResult(
+                retrieval_mode="structure_lookup",
+                summary=(
+                    "Untuk urusan payroll, reimbursement, benefit, atau administrasi kompensasi, "
+                    "kamu bisa mulai dari Rina Maheswari di departemen Human Resources."
+                ),
+                records={
+                    "contact_guidance_requested": True,
+                    "contact_guidance_topic": "payroll_benefits",
+                    "recommended_channel": "chat atau email internal tim HR / payroll / benefits",
+                    "preparation_checklist": [
+                        "Siapkan periode payroll yang ingin dicek.",
+                        "Kalau ada bukti terkait, siapkan juga sebelum menghubungi tim terkait.",
+                    ],
+                    "departments": [
+                        {
+                            "department_id": "dept-hr",
+                            "department_name": "Human Resources",
+                            "parent_department_name": None,
+                            "head_employee_name": "Siti Rahayu",
+                        }
+                    ],
+                },
+                evidence=[],
+            )
+        )
+
+        with (
+            patch(
+                "app.agents.orchestrator.retrieve_intent_candidates",
+                new=semantic_mock,
+            ),
+            patch(
+                "app.agents.orchestrator.retrieve_agent_capabilities",
+                new=capability_mock,
+            ),
+            patch(
+                "app.agents.orchestrator._should_use_provider_classifier",
+                return_value=(False, "Test skipped provider."),
+            ),
+            patch(
+                "app.agents.orchestrator.run_hr_data_agent",
+                new=hr_agent_mock,
+            ),
+            patch(
+                "app.agents.orchestrator.run_company_agent",
+                new=company_agent_mock,
+            ),
+        ):
+            result = await orchestrate_message(
+                self.db,
+                self.session,
+                OrchestratorRequest(
+                    message="Saya mau tanya kenapa gaji saya belum cair, ke siapa ya?",
+                    attachments=[],
+                ),
+            )
+
+        self.assertEqual(result.route, AgentRoute.MIXED)
+        self.assertEqual(result.request_category, ConversationRequestCategory.GUIDANCE_REQUEST)
+        self.assertEqual(result.response_mode, ResponseMode.GUIDANCE)
+        self.assertIn("status pembayaran tercatat paid", result.answer)
+        self.assertIn("Rina Maheswari", result.answer)
+        self.assertIn("company-agent", result.used_agents)
+        self.assertIn("hr-data-agent", result.used_agents)
+        self.assertIn("channel yang disarankan", result.recommended_next_steps[0].lower())
+
+    async def test_orchestrator_promotes_sick_leave_guidance_request_to_mixed(self) -> None:
+        semantic_mock = AsyncMock(
+            return_value=SemanticIntentResult(
+                candidates=[],
+                retrieval_mode="disabled",
+                fallback_reason="test",
+            )
+        )
+        capability_mock = AsyncMock(
+            return_value=AgentCapabilityResult(
+                candidates=[],
+                retrieval_mode="disabled",
+                fallback_reason="test",
+            )
+        )
+        hr_agent_mock = AsyncMock(
+            return_value=HRDataAgentResult(
+                topics=["time_off"],
+                summary="Untuk izin sakit, langkah awal paling aman adalah kabari atasan langsungmu, Budi Santoso.",
+                records={"time_off": {"year": 2026}},
+                evidence=[],
+            )
+        )
+        company_agent_mock = AsyncMock(
+            return_value=CompanyAgentResult(
+                retrieval_mode="mixed_lookup",
+                summary=(
+                    "Untuk izin sakit, policy yang paling relevan adalah Kebijakan Cuti Sakit. "
+                    "Langkah awal paling aman tetap kabari atasan langsungmu terlebih dulu. "
+                    "Untuk pengajuan cuti, izin sakit, approval cuti, atau pertanyaan saldo cuti, "
+                    "kamu bisa mulai dari Siti Rahayu di departemen Human Resources."
+                ),
+                records={
+                    "contact_guidance_requested": True,
+                    "contact_guidance_topic": "leave_operations",
+                    "recommended_channel": "chat atasan langsung atau email internal HR operations",
+                    "preparation_checklist": [
+                        "Siapkan jenis cuti, tanggal, dan konteks singkat kebutuhanmu.",
+                        "Kalau menyangkut izin sakit, siapkan juga dokumen pendukung seperti surat dokter bila sudah ada.",
+                    ],
+                    "departments": [
+                        {
+                            "department_id": "dept-hr",
+                            "department_name": "Human Resources",
+                            "parent_department_name": None,
+                            "head_employee_name": "Siti Rahayu",
+                        }
+                    ],
+                },
+                evidence=[],
+            )
+        )
+
+        with (
+            patch(
+                "app.agents.orchestrator.retrieve_intent_candidates",
+                new=semantic_mock,
+            ),
+            patch(
+                "app.agents.orchestrator.retrieve_agent_capabilities",
+                new=capability_mock,
+            ),
+            patch(
+                "app.agents.orchestrator._should_use_provider_classifier",
+                return_value=(False, "Test skipped provider."),
+            ),
+            patch(
+                "app.agents.orchestrator.run_hr_data_agent",
+                new=hr_agent_mock,
+            ),
+            patch(
+                "app.agents.orchestrator.run_company_agent",
+                new=company_agent_mock,
+            ),
+        ):
+            result = await orchestrate_message(
+                self.db,
+                self.session,
+                OrchestratorRequest(
+                    message="Saya mau izin sakit, ke mana saya harus izin?",
+                    attachments=[],
+                ),
+            )
+
+        self.assertEqual(result.route, AgentRoute.MIXED)
+        self.assertEqual(result.request_category, ConversationRequestCategory.GUIDANCE_REQUEST)
+        self.assertEqual(result.response_mode, ResponseMode.GUIDANCE)
+        self.assertIn("Budi Santoso", result.answer)
+        self.assertIn("Siti Rahayu", result.answer)
+        self.assertIn("company-agent", result.used_agents)
+        self.assertIn("hr-data-agent", result.used_agents)
 
     async def test_orchestrator_guidance_next_steps_use_company_contact_metadata(self) -> None:
         semantic_mock = AsyncMock(
@@ -3178,6 +3788,88 @@ class ConversationsApiTests(IsolatedAsyncioTestCase):
             semantic_mock.await_args.args[2],
         )
 
+    async def test_orchestrator_keeps_profile_question_standalone_even_with_benefit_history(self) -> None:
+        semantic_mock = AsyncMock(
+            return_value=SemanticIntentResult(
+                candidates=[],
+                retrieval_mode="disabled",
+                fallback_reason="test",
+            )
+        )
+        capability_mock = AsyncMock(
+            return_value=AgentCapabilityResult(
+                candidates=[],
+                retrieval_mode="disabled",
+                fallback_reason="test",
+            )
+        )
+        hr_agent_mock = AsyncMock(
+            return_value=HRDataAgentResult(
+                topics=["profile"],
+                summary="Posisi kamu saat ini adalah Software Engineer di departemen Engineering.",
+                records={
+                    "profile": {
+                        "employee_id": "20000000-0000-0000-0000-000000000004",
+                        "position": "Software Engineer",
+                        "department_name": "Engineering",
+                        "manager_name": "Budi Santoso",
+                    }
+                },
+                evidence=[],
+            )
+        )
+        company_agent_mock = AsyncMock()
+
+        with (
+            patch(
+                "app.agents.orchestrator.retrieve_intent_candidates",
+                new=semantic_mock,
+            ),
+            patch(
+                "app.agents.orchestrator.retrieve_agent_capabilities",
+                new=capability_mock,
+            ),
+            patch(
+                "app.agents.orchestrator._should_use_provider_classifier",
+                return_value=(False, "Test skipped provider."),
+            ),
+            patch(
+                "app.agents.orchestrator.run_hr_data_agent",
+                new=hr_agent_mock,
+            ),
+            patch(
+                "app.agents.orchestrator.run_company_agent",
+                new=company_agent_mock,
+            ),
+        ):
+            result = await orchestrate_message(
+                self.db,
+                self.session,
+                OrchestratorRequest(
+                    message="Posisi apakah aku di perusahaan ini",
+                    attachments=[],
+                    conversation_history=[
+                        {
+                            "role": "user",
+                            "content": "Saya tadi ke psikolog online 150 ribu, bisa reimburse nggak?",
+                        },
+                        {
+                            "role": "assistant",
+                            "content": "Kasus ini kemungkinan eligible sesuai policy mental health.",
+                        },
+                    ],
+                ),
+            )
+
+        self.assertEqual(result.route, AgentRoute.HR_DATA)
+        self.assertEqual(result.intent.primary_intent, ConversationIntent.PERSONAL_PROFILE)
+        self.assertFalse(result.context["conversation_grounding"]["used"])
+        self.assertEqual(
+            semantic_mock.await_args.args[2],
+            "Posisi apakah aku di perusahaan ini",
+        )
+        company_agent_mock.assert_not_awaited()
+
     def test_minimax_fallback_reason_is_exposed_in_trace(self) -> None:
         conversation_id = self._create_conversation(title="MiniMax fallback reason test")
 
@@ -3610,6 +4302,70 @@ class ConversationsApiTests(IsolatedAsyncioTestCase):
         self.assertIn("company_structure_contact_signal", assessment.matched_keywords)
         self.assertGreaterEqual(assessment.confidence, 0.75)
 
+    def test_classifier_routes_payslip_issue_to_payroll_info(self) -> None:
+        assessment = classify_intent(
+            "Slip saya belum keluar kenapa?",
+        )
+
+        self.assertEqual(assessment.primary_intent, ConversationIntent.PAYROLL_INFO)
+        self.assertIn("payroll_issue_signal", assessment.matched_keywords)
+        self.assertGreaterEqual(assessment.confidence, 0.75)
+
+    def test_classifier_can_route_manager_question_to_personal_profile(self) -> None:
+        assessment = classify_intent(
+            "Atasan aku siapa?",
+        )
+
+        self.assertEqual(assessment.primary_intent, ConversationIntent.PERSONAL_PROFILE)
+        self.assertIn("personal_profile_signal", assessment.matched_keywords)
+        self.assertGreaterEqual(assessment.confidence, 0.75)
+
+    def test_classifier_can_route_position_question_to_personal_profile(self) -> None:
+        assessment = classify_intent(
+            "Posisi apakah aku di perusahaan ini",
+        )
+
+        self.assertEqual(assessment.primary_intent, ConversationIntent.PERSONAL_PROFILE)
+        self.assertIn("personal_profile_signal", assessment.matched_keywords)
+        self.assertGreaterEqual(assessment.confidence, 0.75)
+
+    def test_classifier_can_route_onboarding_guide_question_to_personal_profile(self) -> None:
+        assessment = classify_intent(
+            "Aku Karywan baru di perusahaan ini, bisa minta tolong aku harus di guide siapa",
+        )
+
+        self.assertEqual(assessment.primary_intent, ConversationIntent.PERSONAL_PROFILE)
+        self.assertIn("personal_profile_guidance_signal", assessment.matched_keywords)
+        self.assertGreaterEqual(assessment.confidence, 0.75)
+
+    def test_classifier_can_route_sick_leave_guidance_to_time_off_request_status(self) -> None:
+        assessment = classify_intent(
+            "Kalau saya sakit harus izin ke siapa?",
+        )
+
+        self.assertEqual(assessment.primary_intent, ConversationIntent.TIME_OFF_REQUEST_STATUS)
+        self.assertIn("time_off_request_signal", assessment.matched_keywords)
+        self.assertGreaterEqual(assessment.confidence, 0.75)
+
+    def test_classifier_can_route_leave_approval_question_to_time_off_request_status(self) -> None:
+        assessment = classify_intent(
+            "Atasan yang approve cuti saya siapa?",
+        )
+
+        self.assertEqual(assessment.primary_intent, ConversationIntent.TIME_OFF_REQUEST_STATUS)
+        self.assertIn("time_off_request_signal", assessment.matched_keywords)
+        self.assertNotEqual(assessment.primary_intent, ConversationIntent.PERSONAL_PROFILE)
+        self.assertGreaterEqual(assessment.confidence, 0.75)
+
+    def test_classifier_can_route_leave_simulation_phrase_to_time_off_simulation(self) -> None:
+        assessment = classify_intent(
+            "Kalau saya cuti 3 hari sisa cuti saya berapa?",
+        )
+
+        self.assertEqual(assessment.primary_intent, ConversationIntent.TIME_OFF_SIMULATION)
+        self.assertIn("time_off_simulation_signal", assessment.matched_keywords)
+        self.assertGreaterEqual(assessment.confidence, 0.75)
+
     def test_classifier_can_route_reimbursement_case_to_company_policy(self) -> None:
         assessment = classify_intent(
             "Saya tadi ke psikolog online 150 ribu, bisa reimburse nggak?",
@@ -3771,6 +4527,42 @@ class ConversationsApiTests(IsolatedAsyncioTestCase):
         self.assertAlmostEqual(_extract_amount("klaim 500rb"), 500_000.0)
         self.assertAlmostEqual(_extract_amount("klaim 500.000"), 500_000.0)
 
+    def test_rule_action_config_allows_template_placeholders_for_leave_payload(self) -> None:
+        config = RuleActionConfig.model_validate(
+            {
+                "action_type": "leave_request",
+                "title_template": "Leave request: {{leave_type}}",
+                "summary_template": "Employee requested {{leave_type}} leave.",
+                "priority": "medium",
+                "delivery_channels": ["in_app"],
+                "payload_template": {
+                    "leave_type": "{{leave_type}}",
+                    "start_date": "{{start_date}}",
+                    "end_date": "{{end_date}}",
+                },
+            }
+        )
+
+        self.assertEqual(config.action_type.value, "leave_request")
+        self.assertEqual(config.payload_template["start_date"], "{{start_date}}")
+
+    def test_rule_action_config_still_rejects_invalid_literal_leave_date_range(self) -> None:
+        with self.assertRaises(ValidationError):
+            RuleActionConfig.model_validate(
+                {
+                    "action_type": "leave_request",
+                    "title_template": "Leave request",
+                    "summary_template": "Employee requested leave.",
+                    "priority": "medium",
+                    "delivery_channels": ["in_app"],
+                    "payload_template": {
+                        "leave_type": "sick",
+                        "start_date": "2026-04-12",
+                        "end_date": "2026-04-10",
+                    },
+                }
+            )
+
     # --- Integration tests (conversations API) ---
 
     def test_leave_request_creates_action_when_gate_approves(self) -> None:
@@ -3792,38 +4584,28 @@ class ConversationsApiTests(IsolatedAsyncioTestCase):
             {
                 "rule_id": "60000000-0000-0000-0000-000000000010",
                 "action_type": "leave_request",
-                "title_template": "Leave request",
-                "summary_template": "Employee leave request pending HR review.",
+                "title_template": "Leave request: {{leave_type}}",
+                "summary_template": "Employee requested {{leave_type}} leave from {{start_date}} to {{end_date}}.",
                 "priority": "medium",
                 "delivery_channels": ["in_app"],
-                "payload_template": {"leave_type": "annual"},
+                "payload_template": {
+                    "leave_type": "{{leave_type}}",
+                    "start_date": "{{start_date}}",
+                    "end_date": "{{end_date}}",
+                },
             }
         ]
-        conversation_id = self._create_conversation(title="Leave request test")
 
-        with (
-            patch(
-                "app.agents.orchestrator.classify_with_minimax",
-                new=AsyncMock(return_value=None),
-            ),
-            patch(
-                "app.services.conversations._assess_action_execution_intent",
-                return_value={
-                    "mode": "execution_request",
-                    "should_trigger": True,
-                    "reason": "Leave request with valid dates.",
-                    "extracted": {
-                        "leave_type": "sick",
-                        "start_date": "10 April 2026",
-                        "end_date": "14 April 2026",
-                    },
-                },
-            ),
+        conversation_id = self._create_conversation(title="Leave request execution test")
+
+        with patch(
+            "app.agents.orchestrator.classify_with_minimax",
+            new=AsyncMock(return_value=None),
         ):
             response = self.client.post(
                 f"/api/v1/conversations/{conversation_id}/messages",
                 json={
-                    "message": "Saya ingin ajukan pengajuan cuti sakit dari 10 April 2026 sampai 14 April 2026.",
+                    "message": "Tolong ajukan cuti sakit dari 10 April 2026 sampai 12 April 2026",
                     "attachments": [],
                     "metadata": {"channel": "test"},
                 },
@@ -3831,184 +4613,35 @@ class ConversationsApiTests(IsolatedAsyncioTestCase):
 
         self.assertEqual(response.status_code, 200, response.text)
         payload = response.json()
+        self.assertEqual(payload["orchestration"]["intent"]["primary_intent"], "time_off_request_status")
         self.assertEqual(len(payload["triggered_actions"]), 1)
-        triggered = payload["triggered_actions"][0]
-        self.assertEqual(triggered["type"], "leave_request")
 
-    def test_leave_request_missing_dates_appends_follow_up_prompt(self) -> None:
-        self.db.rules.append(
-            {
-                "id": "60000000-0000-0000-0000-000000000011",
-                "company_id": "00000000-0000-0000-0000-000000000001",
-                "name": "Leave request intake",
-                "description": "Create a leave request action after a resolved conversation.",
-                "trigger": "conversation_resolved",
-                "intent_key": "time_off_request_status",
-                "sensitivity_threshold": "medium",
-                "is_enabled": True,
-                "created_at": datetime.now(UTC),
-                "updated_at": datetime.now(UTC),
-            }
+        triggered_action = payload["triggered_actions"][0]
+        self.assertEqual(triggered_action["type"], "leave_request")
+        self.assertEqual(triggered_action["status"], "pending")
+        self.assertEqual(triggered_action["payload"]["start_date"], "10 April 2026")
+        self.assertEqual(triggered_action["payload"]["end_date"], "12 April 2026")
+
+    def test_attendance_correction_gate_returns_execution_when_date_present(self) -> None:
+        from app.services.execution_intent import assess_action_execution_intent
+
+        result = assess_action_execution_intent(
+            "Saya lupa check-in absen tanggal 10 April 2026 jam 08:30.",
+            intent_key="attendance_review",
         )
-        self.db.rule_actions["60000000-0000-0000-0000-000000000011"] = []
-        conversation_id = self._create_conversation(title="Leave missing dates test")
+        self.assertEqual(result["mode"], "execution_request")
+        self.assertTrue(result["should_trigger"])
+        self.assertIsNotNone(result["extracted"]["date"])
+        self.assertEqual(result["extracted"]["time"], "08:30")
 
-        with (
-            patch(
-                "app.agents.orchestrator.classify_with_minimax",
-                new=AsyncMock(return_value=None),
-            ),
-            patch(
-                "app.services.conversations._assess_action_execution_intent",
-                return_value={
-                    "mode": "missing_info",
-                    "should_trigger": False,
-                    "reason": "Date fields missing.",
-                    "missing_fields": ["start_date", "end_date"],
-                    "extracted": {
-                        "leave_type": "annual",
-                        "start_date": None,
-                        "end_date": None,
-                    },
-                    "follow_up_prompt": "Mulai tanggal berapa cutinya, dan sampai kapan?",
-                },
-            ),
-        ):
-            response = self.client.post(
-                f"/api/v1/conversations/{conversation_id}/messages",
-                json={
-                    "message": "Saya mau ajukan cuti saya.",
-                    "attachments": [],
-                    "metadata": {"channel": "test"},
-                },
-            )
+    def test_attendance_correction_gate_returns_missing_info_when_date_absent(self) -> None:
+        from app.services.execution_intent import assess_action_execution_intent
 
-        self.assertEqual(response.status_code, 200, response.text)
-        payload = response.json()
-        self.assertEqual(payload["triggered_actions"], [])
-        self.assertIn(
-            "Mulai tanggal berapa cutinya",
-            payload["assistant_message"]["content"],
+        result = assess_action_execution_intent(
+            "Saya lupa check-in absen hari ini.",
+            intent_key="attendance_review",
         )
-
-    def test_reimbursement_request_creates_action_when_gate_approves(self) -> None:
-        self.db.rules.append(
-            {
-                "id": "60000000-0000-0000-0000-000000000012",
-                "company_id": "00000000-0000-0000-0000-000000000001",
-                "name": "Reimbursement request intake",
-                "description": "Create a reimbursement action after a resolved conversation.",
-                "trigger": "conversation_resolved",
-                "intent_key": "company_policy",
-                "sensitivity_threshold": "medium",
-                "is_enabled": True,
-                "created_at": datetime.now(UTC),
-                "updated_at": datetime.now(UTC),
-            }
-        )
-        self.db.rule_actions["60000000-0000-0000-0000-000000000012"] = [
-            {
-                "rule_id": "60000000-0000-0000-0000-000000000012",
-                "action_type": "reimbursement_request",
-                "title_template": "Reimbursement request",
-                "summary_template": "Employee reimbursement claim pending review.",
-                "priority": "medium",
-                "delivery_channels": ["in_app"],
-                "payload_template": {"category": "general"},
-            }
-        ]
-        conversation_id = self._create_conversation(title="Reimbursement test")
-
-        with (
-            patch(
-                "app.agents.orchestrator.classify_with_minimax",
-                new=AsyncMock(return_value=None),
-            ),
-            patch(
-                "app.services.conversations._assess_action_execution_intent",
-                return_value={
-                    "mode": "execution_request",
-                    "should_trigger": True,
-                    "reason": "Reimbursement request with all required fields.",
-                    "extracted": {
-                        "category": "optical",
-                        "amount": 500_000.0,
-                        "expense_date": "3 April 2026",
-                    },
-                },
-            ),
-        ):
-            response = self.client.post(
-                f"/api/v1/conversations/{conversation_id}/messages",
-                json={
-                    "message": "Saya mau klaim kacamata sebesar 500 ribu pada 3 April 2026.",
-                    "attachments": [],
-                    "metadata": {"channel": "test"},
-                },
-            )
-
-        self.assertEqual(response.status_code, 200, response.text)
-        payload = response.json()
-        self.assertEqual(len(payload["triggered_actions"]), 1)
-        triggered = payload["triggered_actions"][0]
-        self.assertEqual(triggered["type"], "reimbursement_request")
-
-    def test_profile_update_creates_action_when_gate_approves(self) -> None:
-        self.db.rules.append(
-            {
-                "id": "60000000-0000-0000-0000-000000000013",
-                "company_id": "00000000-0000-0000-0000-000000000001",
-                "name": "Profile update request intake",
-                "description": "Create a profile update action after a resolved conversation.",
-                "trigger": "conversation_resolved",
-                "intent_key": "personal_profile",
-                "sensitivity_threshold": "medium",
-                "is_enabled": True,
-                "created_at": datetime.now(UTC),
-                "updated_at": datetime.now(UTC),
-            }
-        )
-        self.db.rule_actions["60000000-0000-0000-0000-000000000013"] = [
-            {
-                "rule_id": "60000000-0000-0000-0000-000000000013",
-                "action_type": "profile_update_request",
-                "title_template": "Profile update request",
-                "summary_template": "Employee profile update pending HR review.",
-                "priority": "low",
-                "delivery_channels": ["in_app"],
-                "payload_template": {},
-            }
-        ]
-        conversation_id = self._create_conversation(title="Profile update test")
-
-        with (
-            patch(
-                "app.agents.orchestrator.classify_with_minimax",
-                new=AsyncMock(return_value=None),
-            ),
-            patch(
-                "app.services.conversations._assess_action_execution_intent",
-                return_value={
-                    "mode": "execution_request",
-                    "should_trigger": True,
-                    "reason": "Profile update with identifiable fields.",
-                    "extracted": {
-                        "fields_to_update": {"phone_number": None},
-                    },
-                },
-            ),
-        ):
-            response = self.client.post(
-                f"/api/v1/conversations/{conversation_id}/messages",
-                json={
-                    "message": "Tolong update data saya nomor hp.",
-                    "attachments": [],
-                    "metadata": {"channel": "test"},
-                },
-            )
-
-        self.assertEqual(response.status_code, 200, response.text)
-        payload = response.json()
-        self.assertEqual(len(payload["triggered_actions"]), 1)
-        triggered = payload["triggered_actions"][0]
-        self.assertEqual(triggered["type"], "profile_update_request")
+        self.assertEqual(result["mode"], "missing_info")
+        self.assertFalse(result["should_trigger"])
+        self.assertIn("date", result["missing_fields"])
+        self.assertIn("follow_up_prompt", result)
