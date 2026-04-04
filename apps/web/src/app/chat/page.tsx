@@ -42,22 +42,65 @@ function getGeneratedDocumentAttachments(msg: Message): MessageAttachment[] {
   return msg.attachments.filter(isGeneratedDocumentAttachment);
 }
 
+function getUrlFileName(url: string): string {
+  try {
+    const pathname = new URL(url).pathname;
+    const raw = pathname.split("/").pop() ?? "document";
+    // Strip query-like parts that sometimes end up in pathname
+    const name = raw.split("?")[0];
+    // Decode percent-encoding and truncate if too long
+    const decoded = decodeURIComponent(name);
+    return decoded.length > 40 ? decoded.slice(0, 37) + "…" : decoded;
+  } catch {
+    return "document";
+  }
+}
+
+function InlineLinkCard({ url, index }: { url: string; index: number }) {
+  const isPdf = /\.pdf/i.test(url);
+  const fileName = getUrlFileName(url);
+  return (
+    <a
+      key={`link-${index}`}
+      href={url}
+      target="_blank"
+      rel="noreferrer"
+      style={{
+        display: "inline-flex", alignItems: "center", gap: 8,
+        background: "#eff6ff", border: `1px solid #bfdbfe`,
+        borderRadius: 8, padding: "6px 10px", marginTop: 6,
+        textDecoration: "none", color: "#1e40af",
+        fontSize: 12, fontWeight: 500, maxWidth: "100%",
+        verticalAlign: "middle",
+      }}
+    >
+      {isPdf ? (
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#ef4444" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+          <polyline points="14 2 14 8 20 8" />
+        </svg>
+      ) : (
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={BLUE} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+          <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+          <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+        </svg>
+      )}
+      <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 240 }}>
+        {fileName}
+      </span>
+      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" style={{ flexShrink: 0, opacity: 0.6 }}>
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3" />
+      </svg>
+    </a>
+  );
+}
+
 function renderMessageContent(content: string): React.ReactNode {
   return content.split(/(https?:\/\/[^\s]+)/g).map((part, index) => {
     if (/^https?:\/\/[^\s]+$/.test(part)) {
-      return (
-        <a
-          key={`${part}-${index}`}
-          href={part}
-          target="_blank"
-          rel="noreferrer"
-          style={{ color: BLUE, textDecoration: "underline", fontWeight: 500 }}
-        >
-          {part}
-        </a>
-      );
+      return <InlineLinkCard key={`link-${index}`} url={part} index={index} />;
     }
-    return <span key={`${part}-${index}`}>{part}</span>;
+    return <span key={`text-${index}`}>{part}</span>;
   });
 }
 
