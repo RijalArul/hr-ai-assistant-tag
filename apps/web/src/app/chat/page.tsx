@@ -16,10 +16,10 @@ const BLUE_DARK = "#1d4ed8";
 const BLUE_LIGHT = "#eff6ff";
 
 const SUGGESTIONS = [
-  "Why is my salary lower this month?",
-  "When will my leave balance increase?",
-  "When will my reimbursement be paid?",
-  "I want to report a sensitive issue",
+  "Kenapa gaji saya lebih rendah bulan ini?",
+  "Kapan saldo cuti saya bertambah?",
+  "Kapan reimbursement saya cair?",
+  "Saya ingin melaporkan masalah sensitif",
 ];
 
 function initials(name: string): string {
@@ -90,27 +90,51 @@ function BotAvatar() {
   );
 }
 
-// ─── Action buttons after AI message ──────────────────────────────────────
+// ─── Contextual detection ──────────────────────────────────────────────────
 type ModalType = "payslip" | "leave" | "report" | null;
 
-function ActionButtons({ onOpen }: { onOpen: (m: ModalType) => void }) {
-  const btns = [
-    { label: "View Payslip", modal: "payslip" as ModalType, primary: true },
-    { label: "Ask HR", modal: null, primary: false },
-    { label: "Create Ticket", modal: "report" as ModalType, primary: false },
-  ];
+const PAYSLIP_KEYS = ["gaji", "payslip", "slip", "payroll", "salary", "penghasilan", "tunjangan", "potongan", "net pay", "gross", "disburs"];
+const LEAVE_KEYS   = ["cuti", "leave", "izin", "absen", "libur", "time off", "saldo cuti", "hari off", "accrual", "annual leave", "sick leave", "jatah"];
+const REPORT_KEYS  = ["laporan", "laporkan", "complaint", "masalah", "keluhan", "pelecehan", "harassment", "tidak nyaman", "sensitif", "konfidensial", "report", "aduan"];
+
+function detectActions(text: string): { modal: ModalType; label: string; primary: boolean }[] {
+  const t = text.toLowerCase();
+  const result: { modal: ModalType; label: string; primary: boolean }[] = [];
+  if (PAYSLIP_KEYS.some((k) => t.includes(k)))
+    result.push({ modal: "payslip", label: "Lihat Payslip", primary: true });
+  if (LEAVE_KEYS.some((k) => t.includes(k)))
+    result.push({ modal: "leave", label: "Detail Cuti", primary: result.length === 0 });
+  if (REPORT_KEYS.some((k) => t.includes(k)))
+    result.push({ modal: "report", label: "Buat Laporan", primary: false });
+  return result;
+}
+
+function detectQuickReplies(text: string): string[] {
+  const t = text.toLowerCase();
+  if (PAYSLIP_KEYS.some((k) => t.includes(k)))
+    return ["Tunjangan apa saja yang termasuk?", "Kapan gaji bulan ini dibayarkan?"];
+  if (LEAVE_KEYS.some((k) => t.includes(k)))
+    return ["Bagaimana cara mengajukan cuti?", "Berapa total cuti yang tersisa?"];
+  if (REPORT_KEYS.some((k) => t.includes(k)))
+    return ["Apakah identitas saya terlindungi?", "Berapa lama proses investigasinya?"];
+  return ["Bisa jelaskan lebih detail?", "Ada hal lain yang perlu saya tahu?"];
+}
+
+// ─── Action buttons after AI message ──────────────────────────────────────
+function ActionButtons({ content, onOpen }: { content: string; onOpen: (m: ModalType, c: string) => void }) {
+  const btns = detectActions(content);
+  if (btns.length === 0) return null;
   return (
     <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
       {btns.map((b) => (
         <button
           key={b.label}
-          onClick={() => b.modal && onOpen(b.modal)}
+          onClick={() => b.modal && onOpen(b.modal, content)}
           style={{
             padding: "6px 14px", borderRadius: 8, fontSize: 12, fontWeight: 500,
             cursor: "pointer", border: `1px solid ${b.primary ? BLUE : "#d1d5db"}`,
             background: b.primary ? BLUE : "#fff",
             color: b.primary ? "#fff" : "#374151",
-            transition: "all 0.15s",
           }}
         >{b.label}</button>
       ))}
@@ -119,11 +143,8 @@ function ActionButtons({ onOpen }: { onOpen: (m: ModalType) => void }) {
 }
 
 // ─── Quick reply chips ─────────────────────────────────────────────────────
-function QuickReplies({ onSend }: { onSend: (t: string) => void }) {
-  const chips = [
-    "Why is my salary lower this month?",
-    "When will my leave balance increase?",
-  ];
+function QuickReplies({ content, onSend }: { content: string; onSend: (t: string) => void }) {
+  const chips = detectQuickReplies(content);
   return (
     <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 8 }}>
       {chips.map((c) => (
@@ -141,61 +162,151 @@ function QuickReplies({ onSend }: { onSend: (t: string) => void }) {
   );
 }
 
+// ─── Payslip parser ────────────────────────────────────────────────────────
+const MONTH_ID_TO_EN: Record<string, string> = {
+  januari: "January", februari: "February", maret: "March",
+  april: "April", mei: "May", juni: "June", juli: "July",
+  agustus: "August", september: "September", oktober: "October",
+  november: "November", desember: "December",
+};
+
+interface ParsedPayslip {
+  period: string;
+  rows: Array<{ label: string; amount: string; isDeduction: boolean }>;
+  netSalary: string | null;
+  grossSalary: string | null;
+  downloadUrl: string | null;
+}
+
+function parsePayslipFromContent(content: string, attachment?: MessageAttachment): ParsedPayslip {
+  // Period detection
+  let period = "March 2026";
+  const periodMatch = content.match(
+    /\b(januari|februari|maret|april|mei|juni|juli|agustus|september|oktober|november|desember|january|february|march|may|june|july|august|october|november|december)\s+(\d{4})\b/i
+  );
+  if (periodMatch) {
+    const raw = periodMatch[1].toLowerCase();
+    const month = MONTH_ID_TO_EN[raw] ?? (periodMatch[1].charAt(0).toUpperCase() + periodMatch[1].slice(1));
+    period = `${month} ${periodMatch[2]}`;
+  } else if (attachment?.period?.label) {
+    period = attachment.period.label;
+  }
+
+  // Net salary
+  const netMatch = content.match(
+    /(?:gaji\s*bersih|net\s*(?:pay|salary)|take[\s-]*home)[^0-9Rr]*(?:Rp\.?\s*)?([\d.,]+)/i
+  );
+  const netSalary = netMatch ? `Rp ${netMatch[1]}` : null;
+
+  // Gross salary
+  const grossMatch = content.match(
+    /(?:gaji\s*kotor|gross\s*(?:pay|salary)|total\s*gaji|total\s*pendapatan)[^0-9Rr]*(?:Rp\.?\s*)?([\d.,]+)/i
+  );
+  const grossSalary = grossMatch ? `Rp ${grossMatch[1]}` : null;
+
+  // Extract labeled line items: "Label ... Rp X" or "Label: Rp X"
+  const lineRe = /^[-*•]?\s*([A-Za-z][A-Za-z\s()\/]+?)\s*[:\-–]\s*(?:Rp\.?\s*)?([\d.,]+)/gim;
+  const rows: ParsedPayslip["rows"] = [];
+  let m: RegExpExecArray | null;
+  while ((m = lineRe.exec(content)) !== null) {
+    const label = m[1].trim();
+    const amount = `Rp ${m[2]}`;
+    const lc = label.toLowerCase();
+    const isDeduction = /pajak|pph|bpjs|potongan|deduct|pensiun|pension|iuran/.test(lc);
+    // Skip duplicate net/gross from rows (shown separately)
+    if (/gaji bersih|net pay|net salary|take.?home/.test(lc)) continue;
+    rows.push({ label, amount, isDeduction });
+  }
+
+  // Download URL from attachment
+  const downloadUrl =
+    typeof attachment?.download_url === "string" && attachment.download_url
+      ? attachment.download_url
+      : null;
+
+  return { period, rows, netSalary, grossSalary, downloadUrl };
+}
+
 // ─── Payslip Modal ─────────────────────────────────────────────────────────
-function PayslipModal({ session, onClose }: { session: Session | null; onClose: () => void }) {
+function PayslipModal({
+  session,
+  lastAiContent,
+  lastAiAttachment,
+  onClose,
+}: {
+  session: Session | null;
+  lastAiContent: string;
+  lastAiAttachment?: MessageAttachment;
+  onClose: () => void;
+}) {
   const name = session ? getFirstName(session.email) : "Karyawan";
+  const { period, rows, netSalary, grossSalary, downloadUrl } =
+    parsePayslipFromContent(lastAiContent, lastAiAttachment);
+
+  const earnings = rows.filter((r) => !r.isDeduction);
+  const deductions = rows.filter((r) => r.isDeduction);
+
   return (
     <Overlay onClose={onClose}>
       <div style={{ width: 520, maxHeight: "85vh", overflowY: "auto", background: "#fff", borderRadius: 16, padding: 28 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
-          <h2 style={{ fontSize: 18, fontWeight: 700, color: "#111827" }}>Payslip – March 2026</h2>
-          <button
-            style={{ background: BLUE, color: "#fff", border: "none", borderRadius: 8, padding: "7px 16px", fontSize: 13, fontWeight: 500, cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }}
-            onClick={onClose}
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3" /></svg>
-            Download PDF
-          </button>
+          <h2 style={{ fontSize: 18, fontWeight: 700, color: "#111827" }}>Payslip – {period}</h2>
+          {downloadUrl ? (
+            <a
+              href={downloadUrl}
+              target="_blank"
+              rel="noreferrer"
+              style={{ background: BLUE, color: "#fff", border: "none", borderRadius: 8, padding: "7px 16px", fontSize: 13, fontWeight: 500, cursor: "pointer", display: "flex", alignItems: "center", gap: 6, textDecoration: "none" }}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3" /></svg>
+              Download PDF
+            </a>
+          ) : (
+            <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", color: "#9ca3af", padding: 4 }}>
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+            </button>
+          )}
         </div>
 
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 20, padding: "14px 16px", background: "#f9fafb", borderRadius: 10 }}>
           <div>
             <p style={{ fontSize: 11, color: "#6b7280", marginBottom: 2 }}>Company</p>
             <p style={{ fontSize: 13, fontWeight: 600, color: "#111827" }}>PT Maju Bersama</p>
-            <p style={{ fontSize: 12, color: "#6b7280" }}>Jl. Sudirman No. 1</p>
           </div>
           <div>
             <p style={{ fontSize: 11, color: "#6b7280", marginBottom: 2 }}>Employee</p>
             <p style={{ fontSize: 13, fontWeight: 600, color: "#111827" }}>{name}</p>
-            <p style={{ fontSize: 12, color: "#6b7280" }}>Department: Engineering</p>
           </div>
           <div>
             <p style={{ fontSize: 11, color: "#6b7280", marginBottom: 2 }}>Pay Period</p>
-            <p style={{ fontSize: 13, fontWeight: 500, color: "#111827" }}>March 1 – March 31, 2026</p>
-          </div>
-          <div>
-            <p style={{ fontSize: 11, color: "#6b7280", marginBottom: 2 }}>Pay Date</p>
-            <p style={{ fontSize: 13, fontWeight: 500, color: "#111827" }}>April 2, 2026</p>
+            <p style={{ fontSize: 13, fontWeight: 500, color: "#111827" }}>{period}</p>
           </div>
         </div>
 
-        <Section title="Earnings">
-          <Row label="Base Salary" value="Rp 8,000,000" />
-          <Row label="Housing Allowance" value="Rp 1,500,000" />
-          <Row label="Transport Allowance" value="Rp 500,000" />
-          <Row label="Gross Salary" value="Rp 10,000,000" bold />
-        </Section>
+        {earnings.length > 0 && (
+          <Section title="Earnings">
+            {earnings.map((r) => <Row key={r.label} label={r.label} value={r.amount} />)}
+            {grossSalary && <Row label="Gross Salary" value={grossSalary} bold />}
+          </Section>
+        )}
 
-        <Section title="Deductions">
-          <Row label="Income Tax (PPh 21)" value="- Rp 950,000" red />
-          <Row label="BPJS Ketenagakerjaan" value="- Rp 200,000" red />
-          <Row label="BPJS Kesehatan" value="- Rp 150,000" red />
-          <Row label="Pension (1%)" value="- Rp 80,000" red />
-        </Section>
+        {deductions.length > 0 && (
+          <Section title="Deductions">
+            {deductions.map((r) => <Row key={r.label} label={r.label} value={`- ${r.amount}`} red />)}
+          </Section>
+        )}
+
+        {earnings.length === 0 && deductions.length === 0 && (
+          <div style={{ background: "#f9fafb", borderRadius: 10, padding: "14px 16px", marginBottom: 16, fontSize: 13, color: "#6b7280" }}>
+            Rincian slip gaji tersedia di pesan di atas.
+          </div>
+        )}
 
         <div style={{ background: BLUE_LIGHT, borderRadius: 10, padding: "14px 16px", display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 8 }}>
           <span style={{ fontWeight: 700, fontSize: 15, color: "#111827" }}>Net Salary</span>
-          <span style={{ fontWeight: 700, fontSize: 18, color: BLUE }}>Rp 8,620,000</span>
+          <span style={{ fontWeight: 700, fontSize: 18, color: BLUE }}>
+            {netSalary ?? (grossSalary ? "—" : "Lihat pesan")}
+          </span>
         </div>
       </div>
     </Overlay>
@@ -479,7 +590,7 @@ function MessageBubble({
   userInitials: string;
   isLast: boolean;
   onQuickReply: (t: string) => void;
-  onOpenModal: (m: ModalType) => void;
+  onOpenModal: (m: ModalType, content: string, attachment?: MessageAttachment) => void;
 }) {
   const isUser = msg.role === "user";
   const isGuardrail = msg.metadata?.guardrail_triggered as boolean;
@@ -523,8 +634,13 @@ function MessageBubble({
             attachment={attachment}
           />
         ))}
-        {isLast && !isGuardrail && <ActionButtons onOpen={onOpenModal} />}
-        {isLast && !isGuardrail && <QuickReplies onSend={onQuickReply} />}
+        {isLast && !isGuardrail && (
+          <ActionButtons
+            content={msg.content}
+            onOpen={(m, c) => onOpenModal(m, c, generatedDocuments[0])}
+          />
+        )}
+        {isLast && !isGuardrail && <QuickReplies content={msg.content} onSend={onQuickReply} />}
       </div>
     </div>
   );
@@ -538,6 +654,7 @@ export default function ChatPage() {
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(false);
   const [modal, setModal] = useState<ModalType>(null);
+  const [modalContent, setModalContent] = useState<{ content: string; attachment?: MessageAttachment }>({ content: "" });
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const activeConvRef = useRef<Conversation | null>(null);
@@ -712,7 +829,7 @@ export default function ChatPage() {
                   userInitials={userInitials}
                   isLast={msg.role === "assistant" && i === lastAssistantIdx}
                   onQuickReply={sendMessage}
-                  onOpenModal={setModal}
+                  onOpenModal={(m, c, att) => { setModal(m); setModalContent({ content: c, attachment: att }); }}
                 />
               ))}
               {loading && (
@@ -778,7 +895,14 @@ export default function ChatPage() {
       </div>
 
       {/* ── Modals ── */}
-      {modal === "payslip" && <PayslipModal session={session} onClose={() => setModal(null)} />}
+      {modal === "payslip" && (
+        <PayslipModal
+          session={session}
+          lastAiContent={modalContent.content}
+          lastAiAttachment={modalContent.attachment}
+          onClose={() => setModal(null)}
+        />
+      )}
       {modal === "leave" && <LeaveModal session={session} onClose={() => setModal(null)} />}
       {modal === "report" && <ReportModal onClose={() => setModal(null)} />}
 
