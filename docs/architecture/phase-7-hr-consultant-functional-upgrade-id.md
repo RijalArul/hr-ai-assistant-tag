@@ -726,6 +726,7 @@ Definition of Done:
 - ada targeted tests untuk conversational request intake
 
 Catatan status saat ini:
+- document request baseline tetap berjalan lewat payload `document_generation` yang sudah dipakai flow payslip
 - schema payload untuk `leave_request`, `reimbursement_request`, dan `profile_update_request` sudah ada di backend
 - flow missing-info collection dan minimum validation dasar sudah berjalan untuk slice intent yang sekarang dipakai conversation flow
 - linked action creation sudah terhubung ke action engine, tetapi coverage use case formalnya masih perlu diperluas dan dirapikan lagi
@@ -893,6 +894,10 @@ Kalau ingin membagi kerja ke beberapa session tanpa konflik besar, kombinasi yan
 ## TODO Master List
 
 Checklist di bawah ini adalah backlog kerja yang bisa dijalankan bertahap.
+
+Catatan sinkronisasi status:
+- checklist `[x]` pada bagian F dan G berarti baseline slice atau fondasi utamanya sudah ada di codebase
+- status `baseline implemented` atau `partial` pada Session E dan Session G tetap menjadi sumber kebenaran untuk breadth lanjutan, UX, dan hardening yang belum final
 
 ### A. Product and Docs
 - [x] Perbarui positioning HR.ai di `README.md` agar tidak lagi hanya terdengar seperti HR Q&A platform

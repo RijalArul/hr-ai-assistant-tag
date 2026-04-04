@@ -1221,6 +1221,19 @@ class ConversationsApiTests(IsolatedAsyncioTestCase):
         self.assertEqual(triggered_action["type"], "document_generation")
         self.assertEqual(triggered_action["status"], "completed")
         self.assertIn("PDF payslip", payload["assistant_message"]["content"])
+        self.assertIn("Link download:", payload["assistant_message"]["content"])
+        self.assertIn(
+            "https://storage.example/payslip.pdf?signature=test",
+            payload["assistant_message"]["content"],
+        )
+
+        assistant_attachments = payload["assistant_message"]["attachments"]
+        self.assertEqual(len(assistant_attachments), 1)
+        self.assertEqual(assistant_attachments[0]["type"], "generated_document")
+        self.assertEqual(
+            assistant_attachments[0]["download_url"],
+            "https://storage.example/payslip.pdf?signature=test",
+        )
 
         document = triggered_action["execution_result"]["document"]
         self.assertEqual(document["mime_type"], "application/pdf")
@@ -1239,6 +1252,69 @@ class ConversationsApiTests(IsolatedAsyncioTestCase):
             actions_payload["items"][0]["execution_result"]["document"]["file_name"],
             document["file_name"],
         )
+
+    def test_openai_compat_payslip_completion_includes_download_link_and_attachment(self) -> None:
+        with (
+            patch(
+                "app.agents.orchestrator.classify_with_minimax",
+                new=AsyncMock(return_value=None),
+            ),
+            patch(
+                "app.services.action_engine.upload_document_bytes",
+                new=AsyncMock(
+                    return_value=StorageUploadResult(
+                        bucket="enclosed-pocket-eojsv7k0c",
+                        object_key=(
+                            "companies/00000000-0000-0000-0000-000000000001/"
+                            "employees/20000000-0000-0000-0000-000000000004/"
+                            "documents/payslips/2026/03/payslip-2026-03-fakhrul-muhammad-rijal.pdf"
+                        ),
+                        url="https://storage.example/payslip.pdf?signature=test",
+                        expires_at="2026-04-03T12:00:00+00:00",
+                        etag="etag-test",
+                    )
+                ),
+            ),
+        ):
+            response = self.client.post(
+                "/v1/chat/completions",
+                json={
+                    "model": "hr-ai",
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": "Bisakah kamu tolong generate pdf, payslip saya?",
+                        }
+                    ],
+                    "stream": False,
+                },
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertIn("X-HR-Conversation-Id", response.headers)
+
+        payload = response.json()
+        choice = payload["choices"][0]
+        message = choice["message"]
+        self.assertEqual(message["role"], "assistant")
+        self.assertIn("PDF payslip", message["content"])
+        self.assertIn("Link download:", message["content"])
+        self.assertIn(
+            "https://storage.example/payslip.pdf?signature=test",
+            message["content"],
+        )
+        self.assertEqual(len(message["attachments"]), 1)
+        self.assertEqual(message["attachments"][0]["type"], "generated_document")
+        self.assertEqual(
+            message["attachments"][0]["download_url"],
+            "https://storage.example/payslip.pdf?signature=test",
+        )
+        self.assertEqual(
+            message["metadata"]["conversation_id"],
+            response.headers["X-HR-Conversation-Id"],
+        )
+        self.assertEqual(message["metadata"]["triggered_action_count"], 1)
+        self.assertEqual(message["metadata"]["generated_document_count"], 1)
 
     def test_exploratory_payslip_question_does_not_trigger_action(self) -> None:
         conversation_id = self._create_conversation(title="Payslip exploratory gate test")
@@ -1325,6 +1401,7 @@ class ConversationsApiTests(IsolatedAsyncioTestCase):
         # transitioned to FAILED by the I.10 retry-hardening logic.
         self.assertEqual(triggered_action["status"], "pending")
         self.assertIsNone(triggered_action["execution_result"])
+        self.assertEqual(payload["assistant_message"]["attachments"], [])
         self.assertIn(
             "payroll untuk periode yang diminta belum tersedia",
             payload["assistant_message"]["content"].lower(),

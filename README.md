@@ -311,6 +311,7 @@ The repository is no longer only a roadmap skeleton. The current implemented sta
 - **Phase 2**: action contracts, rules, webhooks, execution flow, and delivery queue records are implemented.
 - **Phase 3**: orchestrator, `hr-data-agent`, `company-agent`, `file-agent`, request-category / response-mode resolution, semantic intent retrieval, and Stage 2 `agent_capabilities` routing are implemented.
 - **Phase 4**: conversations API, linked conversation actions, and Phase 3 integration through public endpoints are implemented.
+- **Phase 5**: employee web chat plus baseline HR Admin surfaces for actions, rules, guardrails, and action detail are available; Discord bot wiring and richer HR operations triage remain partial.
 
 Known current MVP behavior:
 - company guidance can recommend primary or alternative PICs, a suggested channel, and a preparation checklist for supported topics.
@@ -718,8 +719,8 @@ The core goal of Phase 2 is consistency and safe downstream handling. Every acti
 - [ ] **Testing:** End-to-end test of the chat -> intent -> agent -> action -> delivery flow.
 
 ### Phase 6: Post-MVP / Backlog
-- [ ] **HR Admin Dashboard:** Build Next.js UI for reviewing actions and managing rules.
-- [ ] **Seed Data:** Create dummy HRIS data for testing/demo purposes.
+- [x] **HR Admin Dashboard (Baseline):** Next.js surfaces for reviewing actions, action detail, rules, and guardrails are available; richer triage and analytics are still partial.
+- [x] **Seed Data:** Dummy HRIS/demo data and routing seed are available for local testing.
 - [ ] **Notification System:** Implement scheduled alerts for pending manual reviews.
 
 ---

@@ -46,6 +46,7 @@ async def list_models(
 
 @router.post(
     "/chat/completions",
+    response_model=ChatCompletionResponse,
     summary="Chat completions (OpenAI-compatible)",
     description=(
         "Accepts an OpenAI Chat Completions request and routes it through the HR.ai "

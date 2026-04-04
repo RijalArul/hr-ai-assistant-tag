@@ -99,6 +99,11 @@ X-HR-Conversation-Id: 40000000-0000-0000-0000-000000000001
 
 Store this value and send it back in `X-HR-Conversation-Id` on subsequent requests to continue the same conversation.
 
+Generated-document note for non-streaming responses:
+- when a low-risk payslip request is auto-executed successfully, `choices[0].message.content` includes a human-readable `Link download: ...` line
+- `choices[0].message.attachments[]` mirrors generated documents in a structured form, including fields such as `file_name`, `mime_type`, `period`, `download_url`, and `download_url_expires_at`
+- `choices[0].message.metadata` includes lightweight HR.ai metadata such as `conversation_id`, `assistant_message_id`, `triggered_action_count`, and `generated_document_count`
+
 ### Streaming Response (stream: true)
 
 When `stream: true`, the response is sent as Server-Sent Events (SSE):
@@ -118,6 +123,10 @@ data: {"id":"chatcmpl-conv-40000000-0000-0000-0000-000000000001","object":"chat.
 
 data: [DONE]
 ```
+
+Streaming note:
+- streaming currently emits the assistant text only; generated-document URLs still appear in the streamed text content
+- structured `attachments` and `metadata` are currently exposed on non-streaming responses only
 
 ### Response When Input Guard Blocks
 

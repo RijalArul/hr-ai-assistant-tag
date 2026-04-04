@@ -38,6 +38,8 @@ class ChatCompletionRequest(BaseModel):
 class OpenAIResponseMessage(BaseModel):
     role: str = "assistant"
     content: str
+    attachments: list[dict[str, Any]] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class ChatCompletionChoice(BaseModel):

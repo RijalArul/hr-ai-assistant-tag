@@ -94,6 +94,30 @@ export interface Action {
   updated_at: string;
 }
 
+export interface MessageAttachment {
+  type?: string;
+  action_id?: string;
+  action_title?: string;
+  document_type?: string;
+  template_key?: string;
+  file_name?: string;
+  mime_type?: string;
+  byte_size?: number;
+  period?: {
+    month?: number;
+    year?: number;
+    label?: string;
+  };
+  storage_provider?: string;
+  storage_error?: string;
+  bucket?: string;
+  object_key?: string;
+  download_url?: string;
+  download_url_expires_at?: string;
+  etag?: string;
+  [key: string]: unknown;
+}
+
 export interface ActionListResponse {
   items: Action[];
   total: number;
@@ -144,7 +168,7 @@ export interface Message {
   conversation_id: string;
   role: "user" | "assistant";
   content: string;
-  attachments: unknown[];
+  attachments: MessageAttachment[];
   metadata: Record<string, unknown>;
   created_at: string;
 }

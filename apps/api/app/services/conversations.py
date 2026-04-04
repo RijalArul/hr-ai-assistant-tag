@@ -120,35 +120,90 @@ def _normalize_message(message: str) -> str:
     return re.sub(r"\s+", " ", message.lower()).strip()
 
 
-def _build_action_follow_up_note(triggered_actions: list[ActionResponse]) -> str | None:
-    if not triggered_actions:
-        return None
-
+def _build_generated_document_attachments(
+    triggered_actions: list[ActionResponse],
+) -> list[dict[str, object]]:
     generated_documents = [
         action
         for action in triggered_actions
         if action.execution_result is not None
         and isinstance(action.execution_result.get("document"), dict)
     ]
+    attachments: list[dict[str, object]] = []
+
+    for action in generated_documents:
+        execution_result = action.execution_result
+        if not isinstance(execution_result, dict):
+            continue
+
+        document = execution_result.get("document")
+        if not isinstance(document, dict):
+            continue
+
+        attachment: dict[str, object] = {
+            "type": "generated_document",
+            "action_id": str(action.id),
+            "action_title": action.title,
+        }
+
+        for key in [
+            "document_type",
+            "template_key",
+            "file_name",
+            "mime_type",
+            "byte_size",
+            "period",
+            "storage_provider",
+            "storage_error",
+            "bucket",
+            "object_key",
+            "download_url",
+            "download_url_expires_at",
+            "etag",
+        ]:
+            value = document.get(key)
+            if value is not None:
+                attachment[key] = value
+
+        attachments.append(attachment)
+
+    return attachments
+
+
+def _build_action_follow_up_note(triggered_actions: list[ActionResponse]) -> str | None:
+    if not triggered_actions:
+        return None
+
+    generated_documents = _build_generated_document_attachments(triggered_actions)
     if generated_documents:
-        execution_result = generated_documents[0].execution_result
-        if isinstance(execution_result, dict):
-            document = execution_result.get("document")
-            if isinstance(document, dict):
-                period = document.get("period", {})
-                period_label = period.get("label") if isinstance(period, dict) else None
-                if period_label:
-                    return (
-                        f" Aku juga sudah menyiapkan PDF payslip untuk periode {period_label} "
-                        "di action percakapan ini."
-                    )
-        return " Aku juga sudah menyiapkan PDF payslip di action percakapan ini."
+        generated_document = generated_documents[0]
+        period = generated_document.get("period", {})
+        period_label = period.get("label") if isinstance(period, dict) else None
+        download_url = generated_document.get("download_url")
+
+        if isinstance(period_label, str) and period_label:
+            if isinstance(download_url, str) and download_url:
+                return (
+                    f"\n\nAku juga sudah menyiapkan PDF payslip untuk periode {period_label}."
+                    f"\nLink download: {download_url}"
+                )
+            return (
+                f"\n\nAku juga sudah menyiapkan PDF payslip untuk periode {period_label}, "
+                "tetapi URL download belum tersedia di respons ini."
+            )
+
+        if isinstance(download_url, str) and download_url:
+            return (
+                "\n\nAku juga sudah menyiapkan PDF payslip."
+                f"\nLink download: {download_url}"
+            )
+        return "\n\nAku juga sudah menyiapkan PDF payslip di action percakapan ini."
 
     if len(triggered_actions) == 1:
-        return f" Aku juga sudah membuat action tindak lanjut: {triggered_actions[0].title}."
+        return f"\n\nAku juga sudah membuat action tindak lanjut: {triggered_actions[0].title}."
 
     return (
-        f" Aku juga sudah membuat {len(triggered_actions)} action tindak lanjut "
+        f"\n\nAku juga sudah membuat {len(triggered_actions)} action tindak lanjut "
         "dari percakapan ini."
     )
 
@@ -651,6 +706,7 @@ async def create_conversation_message(
         triggered_actions = finalized_actions
 
     action_note = _build_action_follow_up_note(triggered_actions)
+    generated_document_attachments = _build_generated_document_attachments(triggered_actions)
     gate_note = _build_action_gate_note(action_gate)
     issue_note = "".join(auto_execution_issue_notes) if auto_execution_issue_notes else None
     combined_note = "".join(note for note in [action_note, gate_note, issue_note] if note)
@@ -691,7 +747,7 @@ async def create_conversation_message(
         employee_id=session.employee_id,
         role=ConversationMessageRole.ASSISTANT,
         content=orchestration.answer,
-        attachments=[],
+        attachments=generated_document_attachments,
         metadata={
             "orchestration": orchestration.model_dump(mode="json"),
         },
