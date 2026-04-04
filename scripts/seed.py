@@ -170,19 +170,36 @@ INSERT INTO payroll (employee_id, month, year, basic_salary, allowances, gross_s
     ('20000000-0000-0000-0000-000000000004', 3, 2026, 12000000, 1500000, 13500000, 400000, 144000, 240000, 700000, 12016000, 'paid', '2026-03-27')
 ON CONFLICT (employee_id, year, month) DO NOTHING;
 
+-- ─── Personal Info (Fakhrul) ──────────────────────────────────────────────────
+INSERT INTO personal_infos (employee_id, phone, address, national_id, tax_id, bank_account, emergency_contact, emergency_phone) VALUES
+    ('20000000-0000-0000-0000-000000000004', '081234567890', 'Jl. Kebon Jeruk No. 123, Jakarta Barat', '3171234567890001', '01.234.567.8-901.000', 'BCA - 1234567890', 'Siti Aminah', '081298765432')
+ON CONFLICT (employee_id) DO NOTHING;
+
 -- ─── Company Rules ────────────────────────────────────────────────────────────
 INSERT INTO company_rules (id, company_id, title, category, content, metadata, effective_date, is_active) VALUES
+    ('30000000-0000-0000-0000-000000000003', '00000000-0000-0000-0000-000000000001',
+        'Kebijakan Reimbursement Transportasi',
+        'benefit',
+        'Karyawan dapat mengajukan reimbursement untuk biaya transportasi operasional seperti taksi, ojek online, tol, dan parkir saat menjalankan tugas kantor. Batas maksimal reimbursement adalah Rp 1.000.000 per bulan. Klaim wajib dilampiri bukti pembayaran digital (e-receipt), karcis tol, atau struk parkir asli. Pengajuan dilakukan maksimal H+7 setelah tanggal pengeluaran.',
+        '{"policy_key":"benefit.transportation_reimbursement","case_type":"transportation","coverage_type":"reimbursement","amount_limit":{"max_value":1000000,"unit":"idr","period":"month"},"frequency_limit":null,"eligible_levels":["permanent","contract"],"required_documents":["e-receipt","karcis tol","struk parkir"],"constraints":{"max_age_days":7},"simulation_mode":true,"affects_balance":false,"approval_chain":["atasan langsung"]}'::jsonb,
+        '2024-01-01', true),
+    ('30000000-0000-0000-0000-000000000004', '00000000-0000-0000-0000-000000000001',
+        'Kebijakan Reimbursement Komunikasi',
+        'benefit',
+        'Karyawan berhak atas reimbursement biaya paket data internet atau pulsa telepon maksimal Rp 500.000 per bulan untuk mendukung kerja remote atau WFH. Klaim wajib melampirkan invoice tagihan bulanan atau bukti pembelian pulsa/paket data. Biaya pemasangan awal internet rumah tidak ditanggung.',
+        '{"policy_key":"benefit.communication_reimbursement","case_type":"internet_allowance","coverage_type":"reimbursement","amount_limit":{"max_value":500000,"unit":"idr","period":"month"},"frequency_limit":null,"eligible_levels":["permanent","contract"],"required_documents":["invoice","bukti pembelian"],"constraints":{"excluded_keywords":["pemasangan awal"]},"simulation_mode":true,"affects_balance":false,"approval_chain":["atasan langsung"]}'::jsonb,
+        '2024-01-01', true),
     ('30000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000001',
         'Kebijakan Cuti Tahunan',
         'leave',
         'Karyawan tetap (permanent) berhak atas 12 hari cuti tahunan per tahun kalender. Cuti tahunan dapat diambil setelah karyawan melewati masa percobaan (probation period) selama 3 bulan. Pengajuan cuti harus dilakukan minimal 3 hari kerja sebelumnya melalui sistem HR, kecuali untuk keadaan darurat. Cuti yang tidak diambil dalam satu tahun kalender tidak dapat dibawa ke tahun berikutnya (tidak ada carry-over). Karyawan kontrak dan magang mendapat jatah cuti pro-rata sesuai durasi kontrak.',
-        '{"policy_key":"leave.annual_leave","case_type":"annual_leave","coverage_type":"entitlement","amount_limit":{"max_value":12,"unit":"day","period":"year"},"frequency_limit":null,"eligible_levels":["permanent","contract","intern"],"required_documents":[],"constraints":{"min_tenure_months":3,"carry_over_allowed":false,"pro_rata_levels":["contract","intern"],"request_notice_days":3}}'::jsonb,
+        '{"policy_key":"leave.annual_leave","case_type":"annual_leave","coverage_type":"entitlement","amount_limit":{"max_value":12,"unit":"day","period":"year"},"frequency_limit":null,"eligible_levels":["permanent","contract","intern"],"required_documents":[],"constraints":{"min_tenure_months":3,"carry_over_allowed":false,"pro_rata_levels":["contract","intern"],"request_notice_days":3},"simulation_mode":true,"affects_balance":true,"balance_type":"annual_leave","approval_chain":["atasan langsung"]}'::jsonb,
         '2024-01-01', true),
     ('30000000-0000-0000-0000-000000000002', '00000000-0000-0000-0000-000000000001',
         'Kebijakan Cuti Sakit',
         'leave',
         'Karyawan berhak atas cuti sakit berbayar dengan syarat melampirkan surat keterangan dokter. Untuk ketidakhadiran 1-2 hari karena sakit, surat dokter dapat diserahkan maksimal H+2 setelah masuk kerja. Ketidakhadiran lebih dari 2 hari wajib disertai surat keterangan dokter yang diserahkan pada hari pertama sakit atau dikirimkan secara digital. Cuti sakit tidak mengurangi jatah cuti tahunan.',
-        '{"policy_key":"leave.sick_leave","case_type":"sick_leave","coverage_type":"entitlement","amount_limit":null,"frequency_limit":null,"eligible_levels":["permanent","contract","intern"],"required_documents":["surat dokter"],"constraints":{"digital_submission_allowed":true,"doctor_note_required_for_extended_absence":true}}'::jsonb,
+        '{"policy_key":"leave.sick_leave","case_type":"sick_leave","coverage_type":"entitlement","amount_limit":null,"frequency_limit":null,"eligible_levels":["permanent","contract","intern"],"required_documents":["surat dokter"],"constraints":{"digital_submission_allowed":true,"doctor_note_required_for_extended_absence":true},"simulation_mode":true,"affects_balance":false,"approval_chain":["atasan langsung"]}'::jsonb,
         '2024-01-01', true),
     ('30000000-0000-0000-0000-000000000003', '00000000-0000-0000-0000-000000000001',
         'Kebijakan Work From Home (WFH)',
@@ -305,6 +322,30 @@ INSERT INTO responsibility_routes (
         '["Siapkan ringkasan topik atau issue yang ingin kamu bahas.", "Kalau menyangkut periode tertentu, sebutkan juga bulan atau tanggal yang relevan."]'::jsonb,
         '{"routing_type": "functional_owner"}'::jsonb,
         true
+    ),
+    (
+        '40000000-0000-0000-0000-000000000006',
+        '00000000-0000-0000-0000-000000000001',
+        'leave_operations',
+        '10000000-0000-0000-0000-000000000002',
+        '20000000-0000-0000-0000-000000000005',
+        '20000000-0000-0000-0000-000000000001',
+        'chat atasan langsung atau email internal HR operations',
+        '["Siapkan jenis cuti, tanggal, dan konteks singkat kebutuhanmu.", "Kalau menyangkut izin sakit, siapkan juga dokumen pendukung seperti surat dokter bila sudah ada."]'::jsonb,
+        '{"routing_type": "functional_owner"}'::jsonb,
+        true
+    ),
+    (
+        '40000000-0000-0000-0000-000000000007',
+        '00000000-0000-0000-0000-000000000001',
+        'attendance_correction',
+        '10000000-0000-0000-0000-000000000002',
+        '20000000-0000-0000-0000-000000000005',
+        '20000000-0000-0000-0000-000000000001',
+        'chat atasan langsung atau portal internal HR',
+        '["Siapkan tanggal absensi yang salah.", "Tentukan status yang benar (WFH/WFO/Sakit).", "Berikan alasan singkat koreksi (misal: lupa check-in)."]'::jsonb,
+        '{"routing_type": "functional_owner"}'::jsonb,
+        true
     )
 ON CONFLICT (company_id, topic_key) DO UPDATE SET
     department_id = EXCLUDED.department_id,
@@ -383,6 +424,38 @@ INSERT INTO intent_examples (
     ),
     (
         '00000000-0000-0000-0000-000000000001',
+        'time_off_request_status',
+        'saya mau izin sakit ke mana saya harus izin',
+        'id',
+        3,
+        true
+    ),
+    (
+        '00000000-0000-0000-0000-000000000001',
+        'time_off_request_status',
+        'atasan yang approve cuti saya siapa',
+        'id',
+        3,
+        true
+    ),
+    (
+        '00000000-0000-0000-0000-000000000001',
+        'time_off_balance',
+        'kapan saldo cuti saya nambah',
+        'id',
+        3,
+        true
+    ),
+    (
+        '00000000-0000-0000-0000-000000000001',
+        'time_off_simulation',
+        'kalau saya cuti 3 hari sisa cuti saya berapa',
+        'id',
+        3,
+        true
+    ),
+    (
+        '00000000-0000-0000-0000-000000000001',
         'payroll_document_request',
         'tolong kirim payslip bulan ini',
         'id',
@@ -403,6 +476,30 @@ INSERT INTO intent_examples (
         'gaji saya bulan ini berapa',
         'id',
         2,
+        true
+    ),
+    (
+        '00000000-0000-0000-0000-000000000001',
+        'payroll_info',
+        'potongan gaji saya apa saja bulan ini',
+        'id',
+        3,
+        true
+    ),
+    (
+        '00000000-0000-0000-0000-000000000001',
+        'payroll_info',
+        'kapan gaji bulan ini cair',
+        'id',
+        3,
+        true
+    ),
+    (
+        '00000000-0000-0000-0000-000000000001',
+        'payroll_info',
+        'slip saya belum keluar kenapa',
+        'id',
+        3,
         true
     ),
     (
@@ -435,6 +532,30 @@ INSERT INTO intent_examples (
         'siapa manager saya',
         'id',
         2,
+        true
+    ),
+    (
+        '00000000-0000-0000-0000-000000000001',
+        'personal_profile',
+        'atasan aku siapa',
+        'id',
+        3,
+        true
+    ),
+    (
+        '00000000-0000-0000-0000-000000000001',
+        'personal_profile',
+        'posisi saya apa di perusahaan ini',
+        'id',
+        3,
+        true
+    ),
+    (
+        '00000000-0000-0000-0000-000000000001',
+        'personal_profile',
+        'saya karyawan baru harus dibimbing siapa',
+        'id',
+        3,
         true
     ),
     (
@@ -1239,6 +1360,10 @@ DELETE FROM personal_infos WHERE employee_id IN (
     FROM employees e
     INNER JOIN companies c ON c.id = e.company_id
     WHERE c.name = 'PT Maju Bersama Tbk'
+);
+DELETE FROM responsibility_routes
+WHERE company_id IN (
+    SELECT id FROM companies WHERE name = 'PT Maju Bersama Tbk'
 );
 DELETE FROM employees
 WHERE company_id IN (

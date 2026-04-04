@@ -983,6 +983,48 @@ Kalau ingin hasil cepat tanpa scope meledak, prioritas yang paling bernilai adal
 8. HR Operations Layer
 9. Analytics and governance hardening
 
+### Prioritas Coverage Harian Untuk Employee Support
+
+Bagian ini sengaja lebih sempit dari roadmap besar di atas.
+Fokusnya adalah:
+- topik yang paling sering muncul dalam operasional kantor sehari-hari
+- topik yang paling cepat terasa manfaatnya bagi employee
+- topik yang fondasi backend-nya sudah cukup ada sehingga realistis untuk diperdalam lebih dulu
+
+Definisi bucket:
+- `Highest`
+  Harus diprioritaskan lebih dulu karena frekuensi hariannya tinggi, dampaknya langsung terasa, dan gap saat ini masih cukup jelas di UX atau reasoning.
+- `High`
+  Penting dan sering dipakai, tetapi urgensinya sedikit di bawah bucket `Highest` atau breadth use case-nya sedikit lebih sempit.
+- `Needed`
+  Tetap layak di-cover karena membantu employee support platform terasa lengkap, tetapi bukan use case paling harian untuk mayoritas employee.
+
+Definisi status implementasi aktual:
+- `Mostly covered`
+  Use case utamanya sudah cukup usable di chat, regression test utamanya sudah ada, tetapi coverage belum bisa disebut complete.
+- `Partial`
+  Fondasi utamanya sudah ada dan beberapa prompt sudah jalan, tetapi behavior belum konsisten atau breadth use case masih sempit.
+- `Foundation only`
+  Baru ada routing atau guidance dasar; pengalaman end-to-end belum terasa matang.
+
+| Priority | Coverage area | Status implementasi aktual | Contoh pertanyaan harian | Kondisi repo saat ini | Gap utama yang masih tersisa |
+| --- | --- | --- | --- | --- | --- |
+| `Highest` | Leave dan izin operasional | `Partial` | "izin sakit ke mana", "kalau saya cuti 3 hari sisa saya berapa", "kapan saldo cuti saya nambah", "cuti saya harus di-approve siapa" | saldo dan request snapshot sudah ada, schema `leave_request` sudah ada, simulasi cuti dasar sudah ada, metadata approval chain policy sudah ada | mekanisme izin sakit dan approval guidance belum kaya, pertanyaan accrual masih belum kuat, phrasing operasional harian belum ter-cover merata |
+| `Highest` | Attendance correction dan exception handling | `Partial` | "saya lupa check-in", "absensi saya salah", "telat hari ini harus lapor siapa", "WFH hari ini perlu update ke mana" | intent attendance correction, execution gate, dan contact guidance dasar sudah ada | correction flow belum terasa end-to-end, exception handling harian belum kaya, dan follow-up guidance masih tipis |
+| `Highest` | Payroll issue explanation sehari-hari | `Mostly covered` | "potongan saya kenapa", "BPJS saya berubah kenapa", "gaji bulan ini kapan cair", "slip saya belum keluar" | explanation per komponen payroll, payment timing, payslip issue, dan mixed guidance ke PIC payroll sudah ada | reasoning historis masih bisa diperdalam, status file payslip masih inferred dari payroll data, dan beberapa skenario payroll issue lanjutan belum kaya |
+| `High` | Reimbursement operasional | `Partial` | "cara klaim", "dokumen apa saja", "status klaim saya", "kalau nominal segini eligible nggak" | reasoning reimbursement awal, policy reasoning, dan schema `reimbursement_request` sudah ada | intake end-to-end, status claim, dan guidance dokumen per kasus masih perlu diperdalam |
+| `High` | Profile dan employment self-service | `Partial` | "atasan saya siapa", "posisi saya apa", "join date saya kapan", "saya mau update rekening" | pertanyaan profil personal sudah jauh membaik, schema `profile_update_request` dan gate dasar update sudah ada | breadth field update masih sempit, UX self-service update belum matang, dan coverage employment admin belum penuh |
+| `High` | Internal routing dan approval guidance | `Partial` | "HR atau atasan dulu", "kalau manager tidak ada saya lapor siapa", "untuk administrasi ini ke mana" | company navigation, responsibility routes, dan alternate PIC dasar sudah ada | belum semua phrasing natural dan skenario backup approver / backup PIC ter-cover |
+| `Needed` | Onboarding harian | `Foundation only` | "hari pertama saya harus mulai dari mana", "akses apa yang harus saya punya", "siapa yang guide saya" | guidance dasar dan profile routing untuk guide onboarding sebagian sudah ada | checklist onboarding, role-based next step, dan integrasi lintas fungsi belum matang |
+| `Needed` | IT support operasional | `Foundation only` | "reset password", "VPN saya tidak bisa", "akses tool belum aktif" | routing awal ke IT support sudah ada | intake issue teknis, triage detail, dan status follow-up belum dalam |
+| `Needed` | Recruiting, referral, HRBP, dan internal move guidance | `Partial` | "mau refer teman ke siapa", "diskusi karier ke siapa", "kalau mau internal move mulai dari mana" | routing dasar, contact guidance, dan responsibility route untuk beberapa topik sudah ada | masih lebih kuat sebagai guidance awal daripada workflow atau case handling yang benar-benar kaya |
+
+Ringkasan praktis:
+- Kalau target terdekat adalah "employee assistant yang kepakai tiap hari", bucket `Highest` harus didahulukan.
+- Kalau target berikutnya adalah "self-service yang mulai terasa lengkap", bucket `High` menjadi prioritas setelah bucket `Highest` stabil.
+- Bucket `Needed` tetap penting untuk melengkapi positioning HR.ai sebagai pintu masuk tunggal employee support, tetapi tidak perlu didahulukan sebelum use case harian paling padat terasa solid.
+- Secara status aktual hari ini, area yang paling dekat ke usable harian adalah `Payroll issue explanation`; area lain masih dominan `Partial` atau `Foundation only`.
+
 ## Exit Criteria Jangka Menengah
 
 Rencana ini dianggap berhasil mulai bergerak ke arah yang benar jika:

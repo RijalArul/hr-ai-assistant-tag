@@ -70,23 +70,79 @@ INTENT_KEYWORDS: OrderedDict[ConversationIntent, list[str]] = OrderedDict(
             ],
         ),
         (
+            ConversationIntent.ATTENDANCE_CORRECTION,
+            [
+                "lupa absen",
+                "lupa check-in",
+                "lupa check in",
+                "salah absen",
+                "koreksi absen",
+                "update absen",
+                "lupa lapor",
+                "salah status",
+                "harusnya wfh",
+                "harusnya wfo",
+                "correction",
+            ],
+        ),
+        (
             ConversationIntent.TIME_OFF_BALANCE,
             ["sisa cuti", "jatah cuti", "saldo cuti", "leave balance"],
         ),
         (
             ConversationIntent.TIME_OFF_REQUEST_STATUS,
-            ["status cuti", "pengajuan cuti", "leave request", "cuti saya"],
+            [
+                "status cuti",
+                "pengajuan cuti",
+                "leave request",
+                "cuti saya",
+                "izin sakit",
+                "cuti sakit",
+                "sick leave",
+                "lapor sakit",
+                "approve cuti",
+                "approval cuti",
+                "persetujuan cuti",
+            ],
+        ),
+        (
+            ConversationIntent.TIME_OFF_SIMULATION,
+            [
+                "kalau saya cuti",
+                "simulasi cuti",
+                "hitung cuti",
+                "potong cuti",
+                "ambil cuti 3 hari",
+                "ambil cuti 2 hari",
+                "rencana cuti",
+                "sisa berapa kalau",
+            ],
         ),
         (
             ConversationIntent.PERSONAL_PROFILE,
             [
                 "profil saya",
+                "profil aku",
                 "data saya",
+                "data aku",
                 "posisi saya",
+                "posisi aku",
+                "jabatan saya",
+                "jabatan aku",
+                "role saya",
+                "role aku",
                 "join date",
                 "tanggal join",
                 "atasan saya",
+                "atasan aku",
                 "manager saya",
+                "manager aku",
+                "manajer saya",
+                "manajer aku",
+                "mentor saya",
+                "mentor aku",
+                "guide saya",
+                "guide aku",
             ],
         ),
         (
@@ -179,8 +235,10 @@ HR_DATA_INTENTS = {
     ConversationIntent.PAYROLL_INFO,
     ConversationIntent.PAYROLL_DOCUMENT_REQUEST,
     ConversationIntent.ATTENDANCE_REVIEW,
+    ConversationIntent.ATTENDANCE_CORRECTION,
     ConversationIntent.TIME_OFF_BALANCE,
     ConversationIntent.TIME_OFF_REQUEST_STATUS,
+    ConversationIntent.TIME_OFF_SIMULATION,
     ConversationIntent.PERSONAL_PROFILE,
 }
 COMPANY_INTENTS = {
@@ -207,7 +265,10 @@ GUIDANCE_REQUEST_MARKERS = [
     "hubungi siapa",
     "kontak siapa",
     "ke siapa",
+    "ke mana",
     "harus ke siapa",
+    "harus izin ke mana",
+    "izin ke mana",
     "harus tanya ke siapa",
     "siapa yang bisa bantu",
     "siapa yang harus saya hubungi",
@@ -217,9 +278,45 @@ GUIDANCE_REQUEST_MARKERS = [
     "siapa hrbp",
     "ke tim mana",
     "jalur mana",
+    "approve siapa",
+    "di-approve siapa",
+    "approval siapa",
+    "persetujuan siapa",
+    "siapa yang approve",
     "minta arahan",
     "next step",
     "langkah berikutnya",
+]
+PERSONAL_PROFILE_SELF_MARKERS = [
+    "saya",
+    "aku",
+    "gue",
+    "gua",
+    "my",
+    "me",
+]
+PERSONAL_PROFILE_FIELD_MARKERS = [
+    "profil",
+    "profile",
+    "data saya",
+    "data aku",
+    "posisi",
+    "jabatan",
+    "role",
+    "atasan",
+    "manager",
+    "manajer",
+    "supervisor",
+    "lead",
+]
+PERSONAL_PROFILE_GUIDANCE_MARKERS = [
+    "guide",
+    "mentor",
+    "onboarding",
+    "dibimbing",
+    "membimbing",
+    "diguide",
+    "di guide",
 ]
 POLICY_REASONING_MARKERS = [
     "bisa reimburse",
@@ -320,13 +417,139 @@ def _contains_any_phrase(message: str, phrases: list[str]) -> bool:
 
 
 def _looks_like_guidance_request(message: str) -> bool:
-    return _contains_any_phrase(message, GUIDANCE_REQUEST_MARKERS)
+    return _contains_any_phrase(_normalize_message(message), GUIDANCE_REQUEST_MARKERS)
 
 
 def _looks_like_policy_reasoning_request(message: str) -> bool:
     if _contains_any_phrase(message, POLICY_REASONING_MARKERS):
         return True
     return bool(re.search(r"\b\d{2,}\s?(k|rb|ribu|jt|juta|m|million)\b", message))
+
+
+def _looks_like_payroll_issue_request(message: str) -> bool:
+    lowered = _normalize_message(message)
+    issue_markers = [
+        "potongan",
+        "bpjs",
+        "pph21",
+        "pph 21",
+        "deduction",
+        "deductions",
+        "rincian",
+        "detail gaji",
+        "detail payroll",
+        "komponen gaji",
+        "kapan gaji",
+        "kapan cair",
+        "gajian kapan",
+        "tanggal gajian",
+        "tanggal pembayaran",
+        "status pembayaran",
+        "payment date",
+        "payment status",
+        "belum cair",
+        "belum keluar",
+        "belum terbit",
+        "belum muncul",
+        "slip saya belum",
+        "payslip belum",
+    ]
+    if any(marker in lowered for marker in issue_markers):
+        return True
+
+    asks_why = any(marker in lowered for marker in ["kenapa", "mengapa", "why"])
+    mentions_payroll = any(
+        token in lowered
+        for token in [
+            "gaji",
+            "salary",
+            "payroll",
+            "slip",
+            "payslip",
+            "bpjs",
+            "pph21",
+            "pph 21",
+        ]
+    )
+    return asks_why and mentions_payroll
+
+
+def _looks_like_time_off_simulation_request(message: str) -> bool:
+    lowered = _normalize_message(message)
+    has_leave_subject = any(token in lowered for token in ["cuti", "leave"])
+    has_day_count = bool(re.search(r"\b\d+\s*(hari|day)\b", lowered))
+    has_projection_signal = any(
+        token in lowered
+        for token in [
+            "sisa",
+            "tinggal",
+            "tersisa",
+            "remaining",
+            "berapa kalau",
+        ]
+    )
+    return has_leave_subject and has_day_count and has_projection_signal
+
+
+def _looks_like_time_off_operational_request(message: str) -> bool:
+    lowered = _normalize_message(message)
+    if any(token in lowered for token in ["izin sakit", "cuti sakit", "sick leave"]):
+        return True
+
+    mentions_leave = any(token in lowered for token in ["cuti", "leave"])
+    mentions_sick_leave = "sakit" in lowered and "izin" in lowered
+    has_operational_signal = any(
+        token in lowered
+        for token in [
+            "ajukan",
+            "pengajuan",
+            "request",
+            "approve",
+            "approval",
+            "persetujuan",
+            "izin",
+            "lapor",
+            "status",
+            "ke siapa",
+            "ke mana",
+        ]
+    )
+    return (mentions_leave or mentions_sick_leave) and has_operational_signal
+
+
+def _looks_like_time_off_policy_mechanism_request(message: str) -> bool:
+    lowered = _normalize_message(message)
+    mentions_balance = any(
+        token in lowered
+        for token in ["saldo cuti", "jatah cuti", "leave balance", "sisa cuti"]
+    )
+    asks_refresh = any(token in lowered for token in ["kapan", "when"]) and any(
+        token in lowered
+        for token in ["nambah", "bertambah", "increase", "refresh", "reset"]
+    )
+    return mentions_balance and asks_refresh
+
+
+def _should_promote_hr_route_to_mixed_for_guidance(
+    message: str,
+    intent: IntentAssessment,
+) -> bool:
+    if intent.primary_intent in {
+        ConversationIntent.PAYROLL_INFO,
+        ConversationIntent.PAYROLL_DOCUMENT_REQUEST,
+    }:
+        return _looks_like_guidance_request(message)
+
+    if intent.primary_intent in {
+        ConversationIntent.TIME_OFF_BALANCE,
+        ConversationIntent.TIME_OFF_REQUEST_STATUS,
+        ConversationIntent.TIME_OFF_SIMULATION,
+    }:
+        return _looks_like_guidance_request(message) or _looks_like_time_off_policy_mechanism_request(
+            message
+        )
+
+    return False
 
 
 def _looks_like_workflow_request(
@@ -346,6 +569,63 @@ def _looks_like_decision_support(message: str) -> bool:
 
 def _looks_like_sensitive_report(message: str) -> bool:
     return _contains_any_phrase(message, SENSITIVE_REPORT_MARKERS)
+
+
+def _has_personal_profile_self_signal(message: str) -> bool:
+    lowered = _normalize_message(message)
+    return any(
+        re.search(rf"\b{re.escape(marker)}\b", lowered)
+        for marker in PERSONAL_PROFILE_SELF_MARKERS
+    )
+
+
+def _looks_like_personal_profile_request(message: str) -> bool:
+    lowered = _normalize_message(message)
+    if _looks_like_time_off_operational_request(lowered) and any(
+        token in lowered for token in ["cuti", "leave", "izin"]
+    ):
+        return False
+
+    has_self_signal = _has_personal_profile_self_signal(lowered)
+    asks_identity = any(
+        token in lowered
+        for token in [
+            "siapa",
+            "apa",
+            "posisi apa",
+            "posisi apakah",
+            "jabatan apa",
+            "role apa",
+            "tolong cek",
+            "cek",
+        ]
+    ) or "?" in message
+    asks_profile_field = any(
+        token in lowered
+        for token in [
+            *PERSONAL_PROFILE_FIELD_MARKERS,
+            *PERSONAL_PROFILE_GUIDANCE_MARKERS,
+        ]
+    )
+    if has_self_signal and asks_profile_field:
+        return True
+    if asks_identity and any(
+        token in lowered
+        for token in [
+            "siapa atasan",
+            "atasan siapa",
+            "siapa manager",
+            "manager siapa",
+            "siapa manajer",
+            "manajer siapa",
+            "posisi apa",
+            "posisi apakah",
+            "jabatan apa",
+            "role apa",
+        ]
+    ):
+        return True
+    return False
 
 
 def _pack_agent_message(
@@ -411,6 +691,58 @@ def _build_classification_message(
     return "\n".join(part for part in parts if part)
 
 
+_TOPIC_DOMAIN_MAP: dict[str, str] = {
+    # payroll / salary
+    "gaji": "payroll", "salary": "payroll", "payroll": "payroll",
+    "payslip": "payroll", "slip gaji": "payroll",
+    # attendance
+    "attendance": "attendance", "kehadiran": "attendance",
+    "presensi": "attendance", "jam masuk": "attendance",
+    "check in": "attendance", "check-in": "attendance",
+    # time-off
+    "cuti": "time_off", "leave": "time_off", "izin": "time_off",
+    "saldo cuti": "time_off", "jatah cuti": "time_off",
+    # sensitive / reporting
+    "lapor": "sensitive", "melaporkan": "sensitive", "report": "sensitive",
+    "pelecehan": "sensitive", "diskriminasi": "sensitive",
+    "kekerasan": "sensitive", "dibully": "sensitive", "bully": "sensitive",
+    "harassment": "sensitive", "sensitivity": "sensitive",
+    "sensitive": "sensitive", "whistleblow": "sensitive",
+    "pelanggaran": "sensitive", "keluhan": "sensitive",
+    "complaint": "sensitive", "unsafe": "sensitive",
+    # decision support
+    "resign": "decision", "mengundurkan diri": "decision",
+    "burnout": "decision", "konflik": "decision", "mutasi": "decision",
+    # policy / company
+    "aturan": "policy", "policy": "policy", "kebijakan": "policy",
+    "reimburse": "policy", "reimbursement": "policy",
+    "klaim": "policy", "claim": "policy",
+    # profile
+    "profil": "profile", "profile": "profile",
+    "posisi": "profile", "jabatan": "profile", "role": "profile",
+}
+
+
+def _detect_topic_domain_from_message(lowered_message: str) -> str | None:
+    """Return the dominant topic domain for a single message, or None."""
+    for phrase, domain in _TOPIC_DOMAIN_MAP.items():
+        if phrase in lowered_message:
+            return domain
+    return None
+
+
+def _detect_topic_domain(
+    conversation_history: list[dict[str, str]],
+) -> str | None:
+    """Return the dominant topic domain of the most recent user message in history."""
+    for item in reversed(conversation_history):
+        role = str(item.get("role", "")).strip().lower()
+        content = str(item.get("content", "")).strip().lower()
+        if role == "user" and content:
+            return _detect_topic_domain_from_message(content)
+    return None
+
+
 def _should_use_conversation_grounding(
     message: str,
     conversation_history: list[dict[str, str]] | None,
@@ -457,17 +789,69 @@ def _should_use_conversation_grounding(
         "struktur",
         "department",
         "departemen",
+        "posisi",
+        "jabatan",
+        "role",
         "atasan",
         "manager",
+        "manajer",
+        "supervisor",
+        "lead",
+        "mentor",
+        "guide",
+        "onboarding",
         "profil",
         "profile",
         "saldo",
         "status",
+        # Sensitive / reporting signals – prevent topic bleeding from
+        # prior conversations when the user starts a report or raises
+        # a wellbeing / sensitivity concern.
+        "lapor",
+        "melaporkan",
+        "report",
+        "pelecehan",
+        "diskriminasi",
+        "unsafe",
+        "kekerasan",
+        "dibully",
+        "bully",
+        "harassment",
+        "sensitivity",
+        "sensitive",
+        "whistleblow",
+        "pelanggaran",
+        "keluhan",
+        "complaint",
+        # Decision-support signals
+        "resign",
+        "mengundurkan diri",
+        "burnout",
+        "konflik",
+        "mutasi",
+        # Reimbursement / claim signals
+        "reimburse",
+        "reimbursement",
+        "klaim",
+        "claim",
     ]
     has_standalone_signal = bool(
         re.search(r"\b(20\d{2}|jan|feb|mar|apr|mei|may|jun|jul|agu|aug|sep|okt|oct|nov|des|dec)\b", lowered)
     ) or any(signal in lowered for signal in standalone_signals)
-    return not has_standalone_signal
+    if has_standalone_signal:
+        return False
+
+    # Topic-divergence guard: even for short messages without explicit
+    # standalone signals, check whether the previous conversation was
+    # about a clearly *different* domain.  If so, do NOT ground – the
+    # user likely started a new topic.
+    if conversation_history and not has_referential_marker:
+        prev_domain = _detect_topic_domain(conversation_history)
+        curr_domain = _detect_topic_domain_from_message(lowered)
+        if prev_domain and curr_domain and prev_domain != curr_domain:
+            return False
+
+    return True
 
 
 def _build_grounded_message_from_history(
@@ -536,16 +920,25 @@ def _apply_local_intent_bonus(
         ):
             bonus_score += 3
             bonus_matches.append("time_off_balance_signal")
+        if _looks_like_time_off_policy_mechanism_request(lowered_message):
+            bonus_score += 2
+            bonus_matches.append("time_off_balance_refresh_signal")
 
     if intent == ConversationIntent.TIME_OFF_REQUEST_STATUS:
-        if "cuti" in lowered_message and any(
-            token in lowered_message for token in ["status", "pengajuan", "request"]
-        ):
-            bonus_score += 3
+        if _looks_like_time_off_operational_request(lowered_message):
+            bonus_score += 4
             bonus_matches.append("time_off_request_signal")
 
+    if intent == ConversationIntent.TIME_OFF_SIMULATION:
+        if _looks_like_time_off_simulation_request(lowered_message):
+            bonus_score += 4
+            bonus_matches.append("time_off_simulation_signal")
+
     if intent == ConversationIntent.PAYROLL_DOCUMENT_REQUEST:
-        if any(token in lowered_message for token in ["slip", "payslip", "pay slip"]):
+        if (
+            any(token in lowered_message for token in ["slip", "payslip", "pay slip"])
+            and not _looks_like_payroll_issue_request(lowered_message)
+        ):
             bonus_score += 3
             bonus_matches.append("payroll_document_signal")
 
@@ -553,6 +946,9 @@ def _apply_local_intent_bonus(
         if any(token in lowered_message for token in ["gaji", "salary", "payroll"]):
             bonus_score += 2
             bonus_matches.append("payroll_info_signal")
+        if _looks_like_payroll_issue_request(lowered_message):
+            bonus_score += 3
+            bonus_matches.append("payroll_issue_signal")
 
     if intent == ConversationIntent.ATTENDANCE_REVIEW:
         if any(
@@ -568,6 +964,35 @@ def _apply_local_intent_bonus(
         ):
             bonus_score += 3
             bonus_matches.append("attendance_review_signal")
+
+    if intent == ConversationIntent.PERSONAL_PROFILE:
+        if _looks_like_personal_profile_request(lowered_message):
+            bonus_score += 4
+            bonus_matches.append("personal_profile_signal")
+        if any(
+            token in lowered_message
+            for token in [
+                "posisi",
+                "jabatan",
+                "role",
+                "atasan",
+                "manager",
+                "manajer",
+                "supervisor",
+                "lead",
+            ]
+        ):
+            bonus_score += 2
+            bonus_matches.append("personal_profile_field_signal")
+        if (
+            _has_personal_profile_self_signal(lowered_message)
+            and any(
+                token in lowered_message
+                for token in PERSONAL_PROFILE_GUIDANCE_MARKERS
+            )
+        ):
+            bonus_score += 3
+            bonus_matches.append("personal_profile_guidance_signal")
 
     if intent == ConversationIntent.COMPANY_POLICY:
         if any(token in lowered_message for token in ["aturan", "kebijakan", "policy"]):
@@ -1011,6 +1436,9 @@ def _derive_request_category(
     ):
         return ConversationRequestCategory.POLICY_REASONING_REQUEST
 
+    if intent.primary_intent == ConversationIntent.TIME_OFF_SIMULATION:
+        return ConversationRequestCategory.SIMULATION_REQUEST
+
     return ConversationRequestCategory.INFORMATIONAL_QUESTION
 
 
@@ -1023,7 +1451,10 @@ def _resolve_response_mode(
         return ResponseMode.SENSITIVE_GUARDED
     if request_category == ConversationRequestCategory.GUIDANCE_REQUEST:
         return ResponseMode.GUIDANCE
-    if request_category == ConversationRequestCategory.POLICY_REASONING_REQUEST:
+    if request_category in {
+        ConversationRequestCategory.POLICY_REASONING_REQUEST,
+        ConversationRequestCategory.SIMULATION_REQUEST,
+    }:
         return ResponseMode.POLICY_REASONING
     if request_category == ConversationRequestCategory.WORKFLOW_REQUEST:
         return ResponseMode.WORKFLOW_INTAKE
@@ -1032,6 +1463,7 @@ def _resolve_response_mode(
 
 def _build_recommended_next_steps(
     *,
+    message: str = "",
     intent: IntentAssessment,
     route: AgentRoute,
     request_category: ConversationRequestCategory,
@@ -1040,6 +1472,7 @@ def _build_recommended_next_steps(
     sensitive_case: SensitiveCaseAssessment | None = None,
 ) -> list[str]:
     company_records = company_records or {}
+    lowered = _normalize_message(message)
     steps: list[str] = []
 
     if response_mode == ResponseMode.GUIDANCE:
@@ -1104,6 +1537,35 @@ def _build_recommended_next_steps(
             [
                 "Sebutkan periode atau detail dokumen secara eksplisit jika kamu ingin sistem membuat action formal.",
                 "Cek action percakapan ini setelah request dikonfirmasi untuk melihat follow-up yang dibuat.",
+            ]
+        )
+    elif request_category == ConversationRequestCategory.SIMULATION_REQUEST:
+        steps.extend(
+            [
+                "Sebutkan jumlah hari atau rentang tanggal spesifik untuk simulasi yang lebih akurat.",
+                "Tanyakan tentang sisa saldo setelah simulasi jika kamu ingin merencanakan cuti panjang.",
+            ]
+        )
+    elif intent.primary_intent == ConversationIntent.ATTENDANCE_CORRECTION:
+        steps.extend(
+            [
+                "Sebutkan tanggal absensi yang ingin dikoreksi agar PIC bisa mengecek lebih cepat.",
+                "Lampirkan bukti (misal: screenshot/foto) jika diminta oleh atasan atau tim HR.",
+            ]
+        )
+    elif "reimburse" in lowered or "klaim" in lowered or "claim" in lowered:
+        steps.extend(
+            [
+                "Sebutkan kategori reimbursement (misal: kacamata, transportasi, atau medical).",
+                "Pastikan nominal dan tanggal pengeluaran sudah disebutkan untuk proses intake otomatis.",
+                "Siapkan dokumen wajib seperti invoice, receipt, atau bukti bayar digital.",
+            ]
+        )
+    elif intent.primary_intent == ConversationIntent.PERSONAL_PROFILE and any(v in lowered for v in ["update", "ubah", "ganti", "edit"]):
+        steps.extend(
+            [
+                "Sebutkan data spesifik yang ingin diubah (misal: alamat, nomor HP, atau rekening bank).",
+                "Pastikan kamu memiliki dokumen pendukung jika perubahan data memerlukan verifikasi HR.",
             ]
         )
     elif response_mode == ResponseMode.SENSITIVE_GUARDED:
@@ -1392,6 +1854,7 @@ def _infer_agents_from_capabilities(
 
 def _build_agent_execution_plan(
     *,
+    message: str,
     route: AgentRoute,
     intent: IntentAssessment,
     query_policy: dict[str, Any],
@@ -1408,6 +1871,14 @@ def _build_agent_execution_plan(
         has_attachments=has_attachments,
     )
     route_agents = _route_to_agent_keys(route)
+
+    if (
+        route == AgentRoute.HR_DATA
+        and _should_promote_hr_route_to_mixed_for_guidance(message, intent)
+    ):
+        return AgentRoute.MIXED, ["hr-data-agent", "company-agent"], (
+            "HR data guidance request needs both employee data and company contact guidance."
+        )
 
     if provider_agents:
         provider_route = _resolve_route_from_agent_keys(
@@ -2130,6 +2601,7 @@ async def orchestrate_message(
             sensitivity=sensitivity,
         )
         recommended_next_steps = _build_recommended_next_steps(
+            message=payload.message,
             intent=intent,
             route=AgentRoute.SENSITIVE_REDIRECT,
             request_category=request_category,
@@ -2171,6 +2643,7 @@ async def orchestrate_message(
     initial_route = _resolve_route(intent)
     route = initial_route
     route, planned_agent_keys, agent_plan_reason = _build_agent_execution_plan(
+        message=payload.message,
         route=route,
         intent=intent,
         query_policy=query_policy,
@@ -2259,6 +2732,7 @@ async def orchestrate_message(
             sensitivity=sensitivity,
         )
         recommended_next_steps = _build_recommended_next_steps(
+            message=payload.message,
             intent=intent,
             route=route,
             request_category=request_category,
@@ -2434,6 +2908,7 @@ async def orchestrate_message(
         sensitivity=sensitivity,
     )
     recommended_next_steps = _build_recommended_next_steps(
+        message=payload.message,
         intent=intent,
         route=route,
         request_category=request_category,
