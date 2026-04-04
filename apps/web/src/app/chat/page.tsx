@@ -57,52 +57,70 @@ function getUrlFileName(url: string): string {
   }
 }
 
-function InlineLinkCard({ url, index }: { url: string; index: number }) {
-  const isPdf = /\.pdf/i.test(url);
-  const fileName = getUrlFileName(url);
-  return (
-    <a
-      key={`link-${index}`}
-      href={url}
-      target="_blank"
-      rel="noreferrer"
-      style={{
-        display: "inline-flex", alignItems: "center", gap: 8,
-        background: "#eff6ff", border: `1px solid #bfdbfe`,
-        borderRadius: 8, padding: "6px 10px", marginTop: 6,
-        textDecoration: "none", color: "#1e40af",
-        fontSize: 12, fontWeight: 500, maxWidth: "100%",
-        verticalAlign: "middle",
-      }}
-    >
-      {isPdf ? (
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#ef4444" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
-          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-          <polyline points="14 2 14 8 20 8" />
-        </svg>
-      ) : (
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={BLUE} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
-          <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
-          <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
-        </svg>
-      )}
-      <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 240 }}>
-        {fileName}
-      </span>
-      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" style={{ flexShrink: 0, opacity: 0.6 }}>
-        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3" />
-      </svg>
-    </a>
-  );
+/** Split content into plain text (URLs removed) + extracted URL list */
+function splitContentAndUrls(content: string): { text: string; urls: string[] } {
+  const urls: string[] = [];
+  const text = content
+    .replace(/(https?:\/\/[^\s]+)/g, (url) => { urls.push(url); return ""; })
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  return { text, urls };
 }
 
-function renderMessageContent(content: string): React.ReactNode {
-  return content.split(/(https?:\/\/[^\s]+)/g).map((part, index) => {
-    if (/^https?:\/\/[^\s]+$/.test(part)) {
-      return <InlineLinkCard key={`link-${index}`} url={part} index={index} />;
-    }
-    return <span key={`text-${index}`}>{part}</span>;
-  });
+function renderMessageContent(text: string): React.ReactNode {
+  return <>{text}</>;
+}
+
+/** Attachment-style card for a raw URL extracted from AI message text */
+function UrlAttachmentCard({ url }: { url: string }) {
+  const fileName = getUrlFileName(url);
+  const isPdf = /\.pdf/i.test(url);
+  return (
+    <div style={{
+      background: "#f8fafc", border: "1px solid #dbeafe",
+      borderRadius: 12, padding: "11px 14px", marginTop: 8,
+      display: "flex", alignItems: "center", gap: 12,
+      boxShadow: "0 1px 2px rgba(37,99,235,0.07)",
+    }}>
+      <div style={{
+        width: 36, height: 36, borderRadius: 8, flexShrink: 0,
+        background: isPdf ? "#fee2e2" : "#eff6ff",
+        display: "flex", alignItems: "center", justifyContent: "center",
+      }}>
+        {isPdf ? (
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#ef4444" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+            <polyline points="14 2 14 8 20 8" />
+            <line x1="16" y1="13" x2="8" y2="13" /><line x1="16" y1="17" x2="8" y2="17" />
+          </svg>
+        ) : (
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={BLUE} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+            <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+          </svg>
+        )}
+      </div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <p style={{ fontSize: 11, fontWeight: 700, color: "#1d4ed8", marginBottom: 2 }}>
+          {isPdf ? "PDF Document" : "Link"}
+        </p>
+        <p style={{ fontSize: 12, fontWeight: 600, color: "#111827", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {fileName}
+        </p>
+      </div>
+      <a
+        href={url}
+        target="_blank"
+        rel="noreferrer"
+        style={{
+          flexShrink: 0, padding: "7px 12px", borderRadius: 8,
+          background: BLUE, color: "#fff", textDecoration: "none",
+          fontSize: 12, fontWeight: 600,
+        }}
+      >Download</a>
+    </div>
+  );
 }
 
 // ─── Avatars ───────────────────────────────────────────────────────────────
@@ -276,14 +294,17 @@ function DocumentActionCard({ action }: { action: Action }) {
 function PayslipModal({
   session,
   payrollAction,
+  hrPayroll,
   onClose,
 }: {
   session: Session | null;
   payrollAction: Action | null;
+  hrPayroll?: Record<string, unknown>;
   onClose: () => void;
 }) {
   const doc = (payrollAction?.execution_result?.document ?? {}) as Record<string, unknown>;
-  const docData = (payrollAction?.execution_result?.document_data ?? {}) as Record<string, unknown>;
+  // Prefer action document_data, fall back to raw hr_data.payroll record
+  const docData = (payrollAction?.execution_result?.document_data ?? hrPayroll ?? {}) as Record<string, unknown>;
   const period = (doc.period ?? {}) as Record<string, unknown>;
 
   // Period label
@@ -746,6 +767,9 @@ function MessageBubble({
   const isUser = msg.role === "user";
   const isGuardrail = msg.metadata?.guardrail_triggered as boolean;
   const generatedDocuments = isUser ? [] : getGeneratedDocumentAttachments(msg);
+  const { text: displayText, urls: extractedUrls } = isUser
+    ? { text: msg.content, urls: [] }
+    : splitContentAndUrls(msg.content);
 
   if (isUser) {
     return (
@@ -772,13 +796,16 @@ function MessageBubble({
           fontSize: 14, lineHeight: 1.6, color: "#111827", whiteSpace: "pre-wrap",
           boxShadow: "0 1px 3px rgba(0,0,0,0.06)",
         }}>
-          {renderMessageContent(msg.content)}
+          {renderMessageContent(displayText)}
           {isGuardrail && (
             <span style={{ display: "block", fontSize: 11, color: "#92400e", background: "#fef3c7", padding: "2px 8px", borderRadius: 4, marginTop: 6, width: "fit-content" }}>
               ⚠ Filtered by safety system
             </span>
           )}
         </div>
+        {extractedUrls.map((url) => (
+          <UrlAttachmentCard key={url} url={url} />
+        ))}
         {generatedDocuments.map((attachment, index) => (
           <GeneratedDocumentCard
             key={`${msg.id}-generated-document-${index}`}
@@ -1069,6 +1096,7 @@ export default function ChatPage() {
         <PayslipModal
           session={session}
           payrollAction={payslipAction}
+          hrPayroll={(lastHrData?.payroll as Record<string, unknown>[] | undefined)?.[0]}
           onClose={() => setModal(null)}
         />
       )}
