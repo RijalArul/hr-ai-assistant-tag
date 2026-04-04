@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { api, clearToken } from "@/lib/api";
 import type {
+  Action,
   Conversation,
   ConversationExchangeResponse,
   Message,
@@ -205,7 +206,7 @@ function QuickReplies({ content, onSend }: { content: string; onSend: (t: string
   );
 }
 
-// ─── Payslip parser ────────────────────────────────────────────────────────
+// ─── Payslip helpers ───────────────────────────────────────────────────────
 const MONTH_ID_TO_EN: Record<string, string> = {
   januari: "January", februari: "February", maret: "March",
   april: "April", mei: "May", juni: "June", juli: "July",
@@ -213,87 +214,104 @@ const MONTH_ID_TO_EN: Record<string, string> = {
   november: "November", desember: "December",
 };
 
-interface ParsedPayslip {
-  period: string;
-  rows: Array<{ label: string; amount: string; isDeduction: boolean }>;
-  netSalary: string | null;
-  grossSalary: string | null;
-  downloadUrl: string | null;
+const MONTHS_ID = ["Januari","Februari","Maret","April","Mei","Juni","Juli","Agustus","September","Oktober","November","Desember"];
+
+function formatRp(n: number): string {
+  return `Rp ${n.toLocaleString("id-ID")}`;
 }
 
-function parsePayslipFromContent(content: string, attachment?: MessageAttachment): ParsedPayslip {
-  // Period detection
-  let period = "March 2026";
-  const periodMatch = content.match(
-    /\b(januari|februari|maret|april|mei|juni|juli|agustus|september|oktober|november|desember|january|february|march|may|june|july|august|october|november|december)\s+(\d{4})\b/i
+// ─── Document action card (shown below AI message) ─────────────────────────
+function DocumentActionCard({ action }: { action: Action }) {
+  const doc = (action.execution_result?.document ?? {}) as Record<string, unknown>;
+  const period = (doc.period ?? {}) as Record<string, unknown>;
+  const fileName = typeof doc.file_name === "string" ? doc.file_name : action.title;
+  const downloadUrl = typeof doc.download_url === "string" ? doc.download_url : null;
+  const periodLabel = typeof period.label === "string" ? period.label : null;
+
+  return (
+    <div style={{ display: "flex", alignItems: "flex-start", gap: 10, marginTop: 4 }}>
+      <div style={{ width: 34, flexShrink: 0 }} />
+      <div style={{
+        background: "#f8fafc", border: "1px solid #dbeafe",
+        borderRadius: 12, padding: "11px 14px",
+        display: "flex", alignItems: "center", gap: 12, maxWidth: "72%",
+        boxShadow: "0 1px 2px rgba(37,99,235,0.07)",
+      }}>
+        <div style={{
+          width: 36, height: 36, background: "#fee2e2", borderRadius: 8,
+          display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0,
+        }}>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#ef4444" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+            <polyline points="14 2 14 8 20 8" />
+            <line x1="16" y1="13" x2="8" y2="13" /><line x1="16" y1="17" x2="8" y2="17" /><polyline points="10 9 9 9 8 9" />
+          </svg>
+        </div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <p style={{ fontSize: 11, fontWeight: 700, color: "#1d4ed8", marginBottom: 2 }}>Payslip PDF</p>
+          <p style={{ fontSize: 12, fontWeight: 600, color: "#111827", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{fileName}</p>
+          {periodLabel && <p style={{ fontSize: 11, color: "#6b7280", marginTop: 1 }}>Period: {periodLabel}</p>}
+        </div>
+        {downloadUrl ? (
+          <a
+            href={downloadUrl}
+            target="_blank"
+            rel="noreferrer"
+            style={{
+              flexShrink: 0, padding: "7px 12px", borderRadius: 8,
+              background: BLUE, color: "#fff", textDecoration: "none",
+              fontSize: 12, fontWeight: 600,
+            }}
+          >Download</a>
+        ) : (
+          <span style={{ fontSize: 11, color: "#b45309", flexShrink: 0 }}>Generating…</span>
+        )}
+      </div>
+    </div>
   );
-  if (periodMatch) {
-    const raw = periodMatch[1].toLowerCase();
-    const month = MONTH_ID_TO_EN[raw] ?? (periodMatch[1].charAt(0).toUpperCase() + periodMatch[1].slice(1));
-    period = `${month} ${periodMatch[2]}`;
-  } else if (attachment?.period?.label) {
-    period = attachment.period.label;
-  }
-
-  // Net salary
-  const netMatch = content.match(
-    /(?:gaji\s*bersih|net\s*(?:pay|salary)|take[\s-]*home)[^0-9Rr]*(?:Rp\.?\s*)?([\d.,]+)/i
-  );
-  const netSalary = netMatch ? `Rp ${netMatch[1]}` : null;
-
-  // Gross salary
-  const grossMatch = content.match(
-    /(?:gaji\s*kotor|gross\s*(?:pay|salary)|total\s*gaji|total\s*pendapatan)[^0-9Rr]*(?:Rp\.?\s*)?([\d.,]+)/i
-  );
-  const grossSalary = grossMatch ? `Rp ${grossMatch[1]}` : null;
-
-  // Extract labeled line items: "Label ... Rp X" or "Label: Rp X"
-  const lineRe = /^[-*•]?\s*([A-Za-z][A-Za-z\s()\/]+?)\s*[:\-–]\s*(?:Rp\.?\s*)?([\d.,]+)/gim;
-  const rows: ParsedPayslip["rows"] = [];
-  let m: RegExpExecArray | null;
-  while ((m = lineRe.exec(content)) !== null) {
-    const label = m[1].trim();
-    const amount = `Rp ${m[2]}`;
-    const lc = label.toLowerCase();
-    const isDeduction = /pajak|pph|bpjs|potongan|deduct|pensiun|pension|iuran/.test(lc);
-    // Skip duplicate net/gross from rows (shown separately)
-    if (/gaji bersih|net pay|net salary|take.?home/.test(lc)) continue;
-    rows.push({ label, amount, isDeduction });
-  }
-
-  // Download URL from attachment
-  const downloadUrl =
-    typeof attachment?.download_url === "string" && attachment.download_url
-      ? attachment.download_url
-      : null;
-
-  return { period, rows, netSalary, grossSalary, downloadUrl };
 }
+
 
 // ─── Payslip Modal ─────────────────────────────────────────────────────────
 function PayslipModal({
   session,
-  lastAiContent,
-  lastAiAttachment,
+  payrollAction,
   onClose,
 }: {
   session: Session | null;
-  lastAiContent: string;
-  lastAiAttachment?: MessageAttachment;
+  payrollAction: Action | null;
   onClose: () => void;
 }) {
-  const name = session ? getFirstName(session.email) : "Karyawan";
-  const { period, rows, netSalary, grossSalary, downloadUrl } =
-    parsePayslipFromContent(lastAiContent, lastAiAttachment);
+  const doc = (payrollAction?.execution_result?.document ?? {}) as Record<string, unknown>;
+  const docData = (payrollAction?.execution_result?.document_data ?? {}) as Record<string, unknown>;
+  const period = (doc.period ?? {}) as Record<string, unknown>;
 
-  const earnings = rows.filter((r) => !r.isDeduction);
-  const deductions = rows.filter((r) => r.isDeduction);
+  // Period label
+  const month = typeof docData.month === "number" ? docData.month : null;
+  const year = typeof docData.year === "number" ? docData.year : null;
+  const periodLabel = month && year
+    ? `${MONTHS_ID[month - 1]} ${year}`
+    : typeof period.label === "string"
+      ? period.label
+      : "—";
+
+  const downloadUrl = typeof doc.download_url === "string" ? doc.download_url : null;
+  const employeeName = typeof docData.employee_name === "string" ? docData.employee_name
+    : session ? getFirstName(session.email) : "Karyawan";
+  const companyName = typeof docData.company_name === "string" ? docData.company_name : "PT Maju Bersama";
+  const position = typeof docData.position === "string" ? docData.position : null;
+  const department = typeof docData.department_name === "string" ? docData.department_name : null;
+  const paymentDate = typeof docData.payment_date === "string"
+    ? new Date(docData.payment_date).toLocaleDateString("id-ID", { day: "numeric", month: "long", year: "numeric" })
+    : null;
+
+  const hasData = typeof docData.net_pay === "number";
 
   return (
     <Overlay onClose={onClose}>
       <div style={{ width: 520, maxHeight: "85vh", overflowY: "auto", background: "#fff", borderRadius: 16, padding: 28 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
-          <h2 style={{ fontSize: 18, fontWeight: 700, color: "#111827" }}>Payslip – {period}</h2>
+          <h2 style={{ fontSize: 18, fontWeight: 700, color: "#111827" }}>Payslip – {periodLabel}</h2>
           {downloadUrl ? (
             <a
               href={downloadUrl}
@@ -314,32 +332,53 @@ function PayslipModal({
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 20, padding: "14px 16px", background: "#f9fafb", borderRadius: 10 }}>
           <div>
             <p style={{ fontSize: 11, color: "#6b7280", marginBottom: 2 }}>Company</p>
-            <p style={{ fontSize: 13, fontWeight: 600, color: "#111827" }}>PT Maju Bersama</p>
+            <p style={{ fontSize: 13, fontWeight: 600, color: "#111827" }}>{companyName}</p>
           </div>
           <div>
             <p style={{ fontSize: 11, color: "#6b7280", marginBottom: 2 }}>Employee</p>
-            <p style={{ fontSize: 13, fontWeight: 600, color: "#111827" }}>{name}</p>
+            <p style={{ fontSize: 13, fontWeight: 600, color: "#111827" }}>{employeeName}</p>
+            {(position || department) && (
+              <p style={{ fontSize: 12, color: "#6b7280" }}>{[position, department].filter(Boolean).join(" • ")}</p>
+            )}
           </div>
           <div>
             <p style={{ fontSize: 11, color: "#6b7280", marginBottom: 2 }}>Pay Period</p>
-            <p style={{ fontSize: 13, fontWeight: 500, color: "#111827" }}>{period}</p>
+            <p style={{ fontSize: 13, fontWeight: 500, color: "#111827" }}>{periodLabel}</p>
           </div>
+          {paymentDate && (
+            <div>
+              <p style={{ fontSize: 11, color: "#6b7280", marginBottom: 2 }}>Pay Date</p>
+              <p style={{ fontSize: 13, fontWeight: 500, color: "#111827" }}>{paymentDate}</p>
+            </div>
+          )}
         </div>
 
-        {earnings.length > 0 && (
-          <Section title="Earnings">
-            {earnings.map((r) => <Row key={r.label} label={r.label} value={r.amount} />)}
-            {grossSalary && <Row label="Gross Salary" value={grossSalary} bold />}
-          </Section>
-        )}
+        {hasData ? (
+          <>
+            <Section title="Earnings">
+              <Row label="Basic Salary" value={formatRp(docData.basic_salary as number)} />
+              {(docData.allowances as number) > 0 && (
+                <Row label="Allowances" value={formatRp(docData.allowances as number)} />
+              )}
+              <Row label="Gross Salary" value={formatRp(docData.gross_salary as number)} bold />
+            </Section>
 
-        {deductions.length > 0 && (
-          <Section title="Deductions">
-            {deductions.map((r) => <Row key={r.label} label={r.label} value={`- ${r.amount}`} red />)}
-          </Section>
-        )}
-
-        {earnings.length === 0 && deductions.length === 0 && (
+            <Section title="Deductions">
+              {(docData.pph21 as number) > 0 && (
+                <Row label="PPh 21" value={`- ${formatRp(docData.pph21 as number)}`} red />
+              )}
+              {(docData.bpjs_kesehatan as number) > 0 && (
+                <Row label="BPJS Kesehatan" value={`- ${formatRp(docData.bpjs_kesehatan as number)}`} red />
+              )}
+              {(docData.bpjs_ketenagakerjaan as number) > 0 && (
+                <Row label="BPJS Ketenagakerjaan" value={`- ${formatRp(docData.bpjs_ketenagakerjaan as number)}`} red />
+              )}
+              {(docData.deductions as number) > 0 && (
+                <Row label="Other Deductions" value={`- ${formatRp(docData.deductions as number)}`} red />
+              )}
+            </Section>
+          </>
+        ) : (
           <div style={{ background: "#f9fafb", borderRadius: 10, padding: "14px 16px", marginBottom: 16, fontSize: 13, color: "#6b7280" }}>
             Rincian slip gaji tersedia di pesan di atas.
           </div>
@@ -348,7 +387,7 @@ function PayslipModal({
         <div style={{ background: BLUE_LIGHT, borderRadius: 10, padding: "14px 16px", display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 8 }}>
           <span style={{ fontWeight: 700, fontSize: 15, color: "#111827" }}>Net Salary</span>
           <span style={{ fontWeight: 700, fontSize: 18, color: BLUE }}>
-            {netSalary ?? (grossSalary ? "—" : "Lihat pesan")}
+            {hasData ? formatRp(docData.net_pay as number) : "—"}
           </span>
         </div>
       </div>
@@ -698,6 +737,7 @@ export default function ChatPage() {
   const [loading, setLoading] = useState(false);
   const [modal, setModal] = useState<ModalType>(null);
   const [modalContent, setModalContent] = useState<{ content: string; attachment?: MessageAttachment }>({ content: "" });
+  const [lastTriggeredActions, setLastTriggeredActions] = useState<Action[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const activeConvRef = useRef<Conversation | null>(null);
@@ -762,6 +802,7 @@ export default function ChatPage() {
       );
       // Replace dengan response lengkap dari server
       setActiveConv(res.conversation);
+      setLastTriggeredActions(res.triggered_actions ?? []);
     } catch {
       // Rollback optimistic message
       setActiveConv((prev) =>
@@ -783,6 +824,15 @@ export default function ChatPage() {
     (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
   );
   const lastAssistantIdx = messages.map((m) => m.role).lastIndexOf("assistant");
+
+  // Document generation actions to show as attachment cards
+  const docActions = lastTriggeredActions.filter(
+    (a) => a.type === "document_generation" && a.execution_result
+  );
+  // Payslip action for modal
+  const payslipAction = lastTriggeredActions.find(
+    (a) => a.type === "document_generation" && (a.payload as Record<string, unknown>)?.document_type === "salary_slip"
+  ) ?? docActions[0] ?? null;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100vh", background: "#f3f4f6", fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" }}>
@@ -866,14 +916,19 @@ export default function ChatPage() {
             /* ── Messages ── */
             <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
               {messages.map((msg, i) => (
-                <MessageBubble
-                  key={msg.id}
-                  msg={msg}
-                  userInitials={userInitials}
-                  isLast={msg.role === "assistant" && i === lastAssistantIdx}
-                  onQuickReply={sendMessage}
-                  onOpenModal={(m, c, att) => { setModal(m); setModalContent({ content: c, attachment: att }); }}
-                />
+                <div key={msg.id}>
+                  <MessageBubble
+                    msg={msg}
+                    userInitials={userInitials}
+                    isLast={msg.role === "assistant" && i === lastAssistantIdx}
+                    onQuickReply={sendMessage}
+                    onOpenModal={(m, c, att) => { setModal(m); setModalContent({ content: c, attachment: att }); }}
+                  />
+                  {/* Document attachment cards after last AI message */}
+                  {msg.role === "assistant" && i === lastAssistantIdx && docActions.map((action) => (
+                    <DocumentActionCard key={action.id} action={action} />
+                  ))}
+                </div>
               ))}
               {loading && (
                 <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
@@ -941,8 +996,7 @@ export default function ChatPage() {
       {modal === "payslip" && (
         <PayslipModal
           session={session}
-          lastAiContent={modalContent.content}
-          lastAiAttachment={modalContent.attachment}
+          payrollAction={payslipAction}
           onClose={() => setModal(null)}
         />
       )}
